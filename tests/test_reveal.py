@@ -35,6 +35,7 @@ schema's foreign keys, not by asking the ORM whether `card.author` is None.
 import ast
 import json
 import random
+import threading
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -959,6 +960,110 @@ def test_a_reveal_forced_to_run_twice_is_refused_by_the_database(
     assert Retrospective.objects.get(pk=retro.pk).stage == Stage.DRAFT
     # Two members, two rows — the ones the first reveal wrote, and no more.
     assert CycleParticipation.objects.filter(cycle=cycle).count() == 2
+
+
+# --------------------------------------------------------------------------
+# The card that arrives while the reveal is running
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_writing_a_card_locks_the_cycle_row_before_it_reads_the_status(
+    client: Client, cycle: FeedbackCycle, ada: User
+) -> None:
+    """The lock, asserted on the SQL, so it cannot be removed unnoticed.
+
+    Reading `status` without a lock is reading a value another transaction has
+    already changed and not yet committed. The threaded test below is what
+    proves the consequence; this one is what fails the moment somebody
+    simplifies the query and re-opens it.
+    """
+    log_in(client, ada)
+
+    with CaptureQueriesContext(connection) as captured:
+        client.post(
+            reverse("card-create", args=[cycle.pk, Card.Category.START]),
+            {"text": "a card written normally"},
+        )
+
+    locking = [
+        query["sql"]
+        for query in captured.captured_queries
+        if "FOR UPDATE" in query["sql"].upper() and "cycles_feedbackcycle" in query["sql"]
+    ]
+    assert locking, [q["sql"] for q in captured.captured_queries]
+    assert cycle.cards.count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_card_written_at_the_instant_of_the_reveal_cannot_keep_its_author() -> None:
+    """The narrowest window in the feature, held open on purpose and driven through.
+
+    A member presses Add at the moment the facilitator presses Advance. The
+    reveal has set the cycle to CLOSED inside its transaction and has not
+    committed, so a submission that read the status without a lock would still
+    see COLLECTING, accept the card, and commit it into a cycle that has just
+    been revealed. Nothing would ever come back to null its author: the reveal
+    happens once and has already been. That card would carry its author for
+    good — the one outcome this issue exists to make impossible.
+
+    The reveal is held open here between closing the cycle and touching the
+    cards, which is exactly where the window is. Both transactions are real,
+    on two connections, so what settles it is the database and not an ordering
+    the test arranged.
+    """
+    owner = make_user("olive-race", "Olive Owner")
+    ada = make_user("ada-race", "Ada Racer")
+    project = Project.objects.create(name="Platform", owner=owner)
+    Membership.objects.create(project=project, user=owner, role=Membership.Role.FACILITATOR)
+    Membership.objects.create(project=project, user=ada, role=Membership.Role.MEMBER)
+    cycle = FeedbackCycle.objects.create(
+        project=project,
+        week_start=MONDAY,
+        opens_at=OPENS_AT,
+        closes_at=CLOSES_AT,
+        facilitator=owner,
+    )
+    retro = Retrospective.objects.create(cycle=cycle)
+
+    closed = threading.Event()
+    posted = threading.Event()
+    real_reveal = services.reveal_cycle
+
+    def held_open(revealing: FeedbackCycle) -> None:
+        """Stand in the window: the cycle is CLOSED, uncommitted, cards untouched."""
+        closed.set()
+        posted.wait(timeout=20)
+        real_reveal(revealing)
+
+    services.reveal_cycle = held_open
+
+    def submit() -> None:
+        try:
+            closed.wait(timeout=20)
+            writer = Client()
+            writer.login(username=ada.username, password=PASSWORD)
+            writer.post(
+                reverse("card-create", args=[cycle.pk, Card.Category.START]),
+                {"text": "slipped in during the reveal", "is_anonymous": "on"},
+            )
+        finally:
+            posted.set()
+            connection.close()
+
+    thread = threading.Thread(target=submit)
+    thread.start()
+    try:
+        advance_stage(owner, retro)
+    finally:
+        services.reveal_cycle = real_reveal
+    thread.join(timeout=30)
+    assert not thread.is_alive()
+
+    assert not cycle.cards.filter(is_anonymous=True, author__isnull=False).exists()
+    # Whichever order the two transactions settled into, the cycle is coherent:
+    # every card in it was seen by the reveal, or is not in it at all.
+    assert not cycle.cards.filter(position=0).exists()
 
 
 # --------------------------------------------------------------------------

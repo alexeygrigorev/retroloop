@@ -10,6 +10,7 @@ from datetime import timedelta
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
+from django.db import transaction
 from django.db.models import QuerySet
 from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -210,25 +211,40 @@ def card_create(request: HttpRequest, pk: int, category: str) -> HttpResponse:
     page the form was rendered on: a cycle closed while the member was typing
     refuses the POST that follows, which is the half of #7's "once CLOSED, no
     card may be created" that only an endpoint can prove.
-    """
-    cycle = get_object_or_404(FeedbackCycle.objects.select_related("project"), pk=pk)
-    member_or_404(request.user, cycle.project)
-    category = category_or_404(category)
-    if not can_add_card(request.user, cycle):
-        raise PermissionDenied
 
+    The row is locked while that is decided, and the card is written under the
+    same lock. Reading the status without one is not enough: a reveal in
+    flight has already set the cycle to CLOSED but not yet committed, so this
+    request would still see COLLECTING, accept the card, and commit it into a
+    cycle that has just been revealed — where nothing would ever null its
+    author. That card would carry its author for good, which is the one defect
+    #10 exists to make impossible. `cycles/reveal.py` takes the same lock, so
+    the two orders are the only two possible: the card lands before the reveal
+    counts and anonymises it, or the reveal wins and the card is refused.
+    """
     form = CardForm(request.POST)
-    if form.is_valid():
-        card = form.save(commit=False)
-        card.cycle = cycle
-        card.category = category
-        # On every card, including the anonymous ones. Anonymity is applied at
-        # reveal by #10 — `_docs/decisions.md` item 3 — and a card with no
-        # author before then is a card nobody could edit or delete.
-        card.author = request.user
-        card.save()
-        # A fresh, empty form: the section comes back ready for the next card.
-        form = None
+
+    with transaction.atomic():
+        cycle = get_object_or_404(
+            FeedbackCycle.objects.select_for_update(of=("self",)).select_related("project"), pk=pk
+        )
+        member_or_404(request.user, cycle.project)
+        category = category_or_404(category)
+        if not can_add_card(request.user, cycle):
+            raise PermissionDenied
+
+        if form.is_valid():
+            card = form.save(commit=False)
+            card.cycle = cycle
+            card.category = category
+            # On every card, including the anonymous ones. Anonymity is applied
+            # at reveal by #10 — `_docs/decisions.md` item 3 — and a card with
+            # no author before then is a card nobody could edit or delete.
+            card.author = request.user
+            card.save()
+            # A fresh, empty form: the section comes back ready for the next
+            # card.
+            form = None
 
     return render(
         request,
