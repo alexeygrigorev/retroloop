@@ -3,11 +3,9 @@
 {% block title %}Week of {{ cycle.week_start|date:'j F Y' }}{% endblock %}
 
 {% block content %}
-  <h1 class="text-2xl font-semibold tracking-tight">Week of {{ cycle.week_start|date:'j F Y' }}</h1>
+  <h1 class="page-heading">Week of {{ cycle.week_start|date:'j F Y' }}</h1>
   <p class="mt-2 text-sm text-slate-600">
-    <a href="{{ project.get_absolute_url }}" class="text-brand-700 underline hover:text-brand-600">
-      {{ project.name }}
-    </a>
+    <a href="{{ project.get_absolute_url }}" class="link">{{ project.name }}</a>
   </p>
 
   <dl class="mt-6 grid max-w-md grid-cols-[10rem_1fr] gap-y-2 text-sm" data-cycle-status="{{ cycle.status }}">
@@ -45,12 +43,7 @@
     {% endcomment %}
     <form method="post" action="{% url 'cycle-close' cycle.pk %}" class="mt-6">
       {% csrf_token %}
-      <button
-        type="submit"
-        class="rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700"
-      >
-        Close the cycle
-      </button>
+      <button type="submit" class="btn-primary">Close the cycle</button>
     </form>
   {% endif %}
 {% endblock %}

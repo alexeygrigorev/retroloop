@@ -3,7 +3,12 @@
 
    `npm run build:css` compiles it to static/css/app.css, which is generated and
    git-ignored. Source detection is explicit rather than automatic so the build
-   never depends on what happens to be lying around the checkout. */
+   never depends on what happens to be lying around the checkout.
+
+   This is also the one file to open to see what a template may already name.
+   Everything below `@theme` is a component: a button, a link, a heading, a
+   panel, a field. A template names the thing; it does not restate the class
+   string, and it does not invent a colour. */
 @import "tailwindcss" source(none);
 
 @source "../../templates";
@@ -12,4 +17,125 @@
   --color-brand-50: oklch(0.97 0.02 250);
   --color-brand-600: oklch(0.53 0.16 250);
   --color-brand-700: oklch(0.46 0.15 250);
+}
+
+@layer base {
+  /* One focus ring for the whole application, on whatever a keyboard can reach.
+     `:where()` keeps its specificity at zero, so a component can still override
+     it, and the offset makes it read against both the white panel and the slate
+     page behind it. Declared once here rather than per control, which is what
+     made inputs, buttons and links disagree. */
+  :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--color-brand-600);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* ---------------------------------------------------------------- buttons */
+
+  .btn-primary {
+    @apply inline-block rounded-md bg-brand-600 px-3 py-2 text-sm font-medium
+      text-white no-underline hover:bg-brand-700;
+  }
+
+  .btn-secondary {
+    @apply inline-block rounded-md border border-slate-300 bg-white px-3 py-2
+      text-sm font-medium text-slate-700 no-underline hover:border-slate-400
+      hover:bg-brand-50;
+  }
+
+  /* --------------------------------------------------------- text and shapes */
+
+  .link {
+    @apply text-brand-700 underline hover:text-brand-600;
+  }
+
+  .page-heading {
+    @apply text-2xl font-semibold tracking-tight;
+  }
+
+  .section-heading {
+    @apply text-lg font-medium;
+  }
+
+  .panel {
+    @apply rounded-lg border border-slate-200 bg-white p-4;
+  }
+
+  .list-rows {
+    @apply mt-2 flex flex-col gap-1 text-sm text-slate-700;
+  }
+
+  /* A long unbreakable string — a join link is 60-plus characters with no space
+     in it — breaks inside itself rather than widening the content column. */
+  .code-block {
+    @apply block rounded-md border border-slate-200 bg-slate-50 px-3 py-2
+      font-mono text-sm break-all;
+  }
+
+  /* ------------------------------------------------------------------ forms */
+
+  /* The form treatment. A form renders `{{ form.as_div }}` inside an element
+     carrying `.form-fields`, and everything below styles what Django emits.
+     Nothing is asked of the form class in Python and nothing is asked of the
+     template beyond the scope class, so a form written next week is styled the
+     day it is written. */
+  .form-fields {
+    @apply mt-6 flex max-w-md flex-col gap-4;
+  }
+
+  /* `as_div` wraps each field in a plain `<div>`; a field that needs a group —
+     a radio set, a multiple checkbox — comes as a `<fieldset>` instead. Both are
+     a column, so the label, the control, the help text and the errors each get a
+     line of their own. Django emits them label, help text, errors, control, so
+     `order` puts them back into the order they are read in. */
+  .form-fields > div,
+  .form-fields fieldset {
+    @apply flex flex-col gap-1;
+  }
+
+  .form-fields label,
+  .form-fields legend {
+    @apply block text-sm font-medium text-slate-700;
+    order: 0;
+  }
+
+  .form-fields input:not([type="checkbox"], [type="radio"], [type="hidden"]),
+  .form-fields select,
+  .form-fields textarea {
+    @apply block w-full rounded-md border border-slate-300 bg-white px-3 py-2
+      text-sm text-slate-900 placeholder:text-slate-400;
+    order: 1;
+  }
+
+  .form-fields input[type="checkbox"],
+  .form-fields input[type="radio"] {
+    @apply self-start accent-brand-600;
+    order: 1;
+  }
+
+  .form-fields .helptext {
+    @apply block text-xs text-slate-500;
+    order: 2;
+  }
+
+  /* The same red as an error flash message, attached to the field it belongs
+     to, instead of an unstyled bullet list above the form. */
+  .form-fields .errorlist {
+    @apply flex list-none flex-col gap-1 p-0 text-sm text-red-900;
+    order: 3;
+  }
+
+  /* Errors that belong to no single field keep the flash message's box. */
+  .form-fields > .errorlist,
+  .form-fields .errorlist.nonfield {
+    @apply rounded-md border border-red-300 bg-red-50 px-3 py-2;
+  }
+
+  /* The submit button sits under the last field rather than stretching across
+     the column, so no template has to say so. */
+  .form-fields button[type="submit"] {
+    @apply mt-2 self-start;
+  }
 }
