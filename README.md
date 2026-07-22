@@ -1,9 +1,7 @@
 # Weekly Team Feedback Tool
 
 A Django app for running weekly Start/Stop/Continue feedback cycles and the
-retrospectives that follow them. See [`_docs/plan.md`](_docs/plan.md) for what it
-does, [`_docs/architecture.md`](_docs/architecture.md) for how it fits together,
-and [`_docs/tasks.md`](_docs/tasks.md) for the build order.
+retrospectives that follow them.
 
 ## Requirements
 

@@ -1,0 +1,2 @@
+- Tasks are GitHub issues
+- Commit regularly
