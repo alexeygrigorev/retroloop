@@ -22,6 +22,29 @@
       {% endfor %}
     </ul>
 
+    <h2>Feedback cycles</h2>
+    {% if cycles %}
+      <ul>
+        {% for cycle in cycles %}
+          <li>
+            <a href="{{ cycle.get_absolute_url }}">Week of {{ cycle.week_start|date:'j F Y' }}</a>
+            — {{ cycle.get_status_display }}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p>No cycle has been opened for this project yet.</p>
+    {% endif %}
+
+    {% if can_open_cycle %}
+      {% comment %}
+        Hidden from a plain member as a courtesy; cycle_create is what refuses
+        them. Keep this a one-line `{# #}` or a `{% comment %}` block — a
+        two-line `{# #}` is not a comment and renders as page text.
+      {% endcomment %}
+      <p><a href="{% url 'cycle-create' project.pk %}">Open a feedback cycle</a></p>
+    {% endif %}
+
     <h2>Join link</h2>
     <p><code>{{ join_url }}</code></p>
     <p>

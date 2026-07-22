@@ -1,0 +1,40 @@
+{% extends "base_app.html" %}
+
+{% block title %}Open a feedback cycle{% endblock %}
+
+{% block content %}
+  <h1 class="text-2xl font-semibold tracking-tight">Open a feedback cycle</h1>
+  <p class="mt-2 text-sm text-slate-600">For {{ project.name }}.</p>
+
+  <form method="post" class="mt-6 flex max-w-md flex-col gap-2">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button
+      type="submit"
+      class="mt-2 self-start rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white
+             hover:bg-brand-700"
+    >
+      Open the cycle
+    </button>
+  </form>
+
+  {% comment %}
+    Three things the form does not say out loud, and the reasons they are rules
+    rather than hints: a week is named by its Monday, a project runs one open
+    cycle at a time, and the deadline is a deadline rather than a timer.
+  {% endcomment %}
+  <ul class="mt-6 flex list-disc flex-col gap-1 pl-5 text-sm text-slate-600">
+    <li>Pick any day of the week you mean — it is stored as that week's Monday.</li>
+    <li>A project can have only one cycle collecting at a time.</li>
+    <li>
+      The closing time is the deadline the team sees. Nothing closes the cycle
+      on its own; you close it when the team has had long enough.
+    </li>
+  </ul>
+
+  <p class="mt-6 text-sm text-slate-600">
+    <a href="{{ project.get_absolute_url }}" class="text-brand-700 underline hover:text-brand-600">
+      Back to {{ project.name }}
+    </a>
+  </p>
+{% endblock %}

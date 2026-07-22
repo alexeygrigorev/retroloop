@@ -67,6 +67,7 @@ INSTALLED_APPS = [
     "django_tasks_db",
     "accounts",
     "projects",
+    "cycles",
 ]
 
 MIDDLEWARE = [
