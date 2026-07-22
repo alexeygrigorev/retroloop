@@ -61,6 +61,10 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    # Stores the background task queue in Postgres. Core Django ships only the
+    # dummy and immediate backends for django.tasks, so the ORM backend that
+    # gives us a real queue comes from django-tasks-db.
+    "django_tasks_db",
     "accounts",
 ]
 
@@ -106,6 +110,17 @@ DATABASES = {
 
 # Sessions live in Postgres, so there is no second piece of infrastructure to run.
 SESSION_ENGINE = "django.contrib.sessions.backends.db"
+
+# The background queue lives in Postgres too, for the same reason: no Redis, no
+# broker, nothing to run beside the database. `manage.py db_worker` consumes it;
+# see the "Background tasks" section of AGENTS.md for the local command, the
+# enqueue-after-commit convention, and why nothing is retried automatically.
+TASKS = {
+    "default": {
+        "BACKEND": "django_tasks_db.DatabaseBackend",
+        "QUEUES": ["default"],
+    }
+}
 
 # The project owns its user model, so later tables can carry a foreign key to a
 # user that has a display name. There is no mail backend and no EMAIL_* setting:

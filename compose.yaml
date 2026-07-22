@@ -38,10 +38,11 @@ services:
 
   worker:
     build: .
-    # Placeholder until #18 brings the task backend. It has to stay up so the
-    # shared scratch volume and the service wiring are exercised.
-    command: >
-      sh -c "echo 'worker: no task backend yet (see #18), idling'; tail -f /dev/null"
+    # Drains the Postgres-backed task queue. Jobs are claimed with SELECT FOR
+    # UPDATE SKIP LOCKED, so `docker compose up --scale worker=2` runs each
+    # queued task exactly once. Reloading on code changes is on because DEBUG
+    # is, the same as web's runserver.
+    command: uv run manage.py db_worker
     environment:
       DEBUG: "true"
       SECRET_KEY: django-insecure-development-only-key

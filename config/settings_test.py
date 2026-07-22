@@ -41,3 +41,15 @@ os.environ.setdefault(
 )
 
 from config.settings import *  # noqa: F403, E402
+
+# The suite runs task bodies inline, in the enqueueing process, so no worker has
+# to be running for a test to prove what a task does. Everything else about the
+# queue stays as it is in production: django_tasks_db is still installed and its
+# tables are still created, so a test can also drive the ORM backend directly
+# when it needs to assert on the queue itself.
+TASKS = {
+    "default": {
+        "BACKEND": "django.tasks.backends.immediate.ImmediateBackend",
+        "QUEUES": ["default"],
+    }
+}
