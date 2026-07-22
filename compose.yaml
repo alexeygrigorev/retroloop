@@ -3,6 +3,14 @@ name: project-feedback
 services:
   db:
     image: postgres:18
+    # Postgres defaults to 100 connections. One container serves every git
+    # worktree, and `conn_max_age` keeps each Django process's connection open
+    # for ten minutes, so a handful of parallel agents running suites, dev
+    # servers and browser checks exhausts it - one worktree was measured
+    # holding 68 on its own. The symptom is `FATAL: sorry, too many clients
+    # already` surfacing as 500s that look like a bug in whatever was being
+    # tested. Raising this is cheaper than chasing that twice.
+    command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
