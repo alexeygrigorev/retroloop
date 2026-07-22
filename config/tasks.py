@@ -99,34 +99,24 @@ def always_fails(message: str) -> None:
 def process_meeting_record(record_id: int) -> None:
     """Take an uploaded meeting through the pipeline. Enqueued by #19's upload.
 
-    The body belongs to #21, which transcribes the media, hands the transcript
-    to extraction, and deletes the recording in a `finally` block whatever
-    happened (`_docs/decisions.md`, item 6). Until it lands, the job exists so
-    that the enqueue is real and the queue can be watched from the outside: it
-    picks the row up, finds nothing it is allowed to do yet, and leaves the
-    record exactly as it found it.
+    The work is `meetings.pipeline.process_meeting`: it transcribes the media,
+    stores the transcript, and deletes the recording in a `finally` block
+    whatever happened (`_docs/decisions.md`, item 6).
 
-    It takes an id and re-fetches, per the conventions in AGENTS.md. Time
-    passes between the enqueue and the run, so the row may have moved on — a
-    second worker may have claimed it, or the retrospective may be gone — and
-    both of those are a return rather than an error.
+    It takes an id and re-fetches, per the conventions above. Time passes
+    between the enqueue and the run, so the row may have moved on — a second
+    worker may have claimed it, or the retrospective may be gone — and both of
+    those are a return rather than an error.
+
+    Nothing about this job is retried by the queue, per :data:`RETRY_POLICY`,
+    and it is this job that is the reason: after it returns, the recording it
+    would run against has been deleted. The second attempt it does get is
+    arranged in its own body, around the API call, while the audio still
+    exists — see `ai/transcription.py`.
     """
     # Imported here rather than at module scope: this module is imported for
     # its `enqueue_on_commit` helper by code that runs while the app registry
     # is still loading, and a model import at the top would be too early.
-    from meetings.models import MeetingRecord
+    from meetings.pipeline import process_meeting
 
-    record = MeetingRecord.objects.filter(pk=record_id).first()
-    if record is None:
-        logger.info("meeting record %s is gone; nothing to process", record_id)
-        return
-    if record.status != MeetingRecord.Status.UPLOADED:
-        logger.info("meeting record %s is already %s; leaving it alone", record_id, record.status)
-        return
-
-    logger.info(
-        "meeting record %s (%s, %s bytes) is queued; the pipeline that processes it is #21",
-        record.pk,
-        record.kind,
-        record.size_bytes,
-    )
+    process_meeting(record_id)

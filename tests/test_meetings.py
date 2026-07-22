@@ -812,13 +812,19 @@ def test_the_job_is_enqueued_only_once_the_row_is_committed(
 
     Capturing the callbacks is also the proof: an enqueue done inline would
     leave this list empty.
+
+    The suite runs tasks inline, so executing the callback runs #21's pipeline
+    over this seven-byte "recording" as well. Where it ends up is that issue's
+    business — what this test wants is that it ran at all, and only after the
+    commit, so it asserts the record left UPLOADED rather than which status it
+    left it for.
     """
     with django_capture_on_commit_callbacks(execute=True) as callbacks:
         as_facilitator.post(upload_url(retro), {"media": audio_file()}, follow=True)
 
     assert len(callbacks) == 1
     record = MeetingRecord.objects.get()
-    assert record.status == Status.UPLOADED
+    assert record.status != Status.UPLOADED
 
 
 def test_the_job_takes_an_id_rather_than_a_model_instance() -> None:

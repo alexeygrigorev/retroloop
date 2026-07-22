@@ -129,6 +129,42 @@ class MeetingRecord(models.Model):
         return PROGRESS[self.status]
 
 
+class Transcript(models.Model):
+    """What was said, in text, and the only thing that outlives the recording.
+
+    One per record, and the durable record of the meeting: the media is deleted
+    in a `finally` block as the pipeline ends (`_docs/decisions.md` item 6), so
+    after that this row is all there is. It is a column in Postgres and nothing
+    else — no file, no object store, no second copy to keep in sync or forget to
+    delete.
+
+    `text` carries speaker labels, `Speaker 1:` and so on, one line per turn.
+    They are what makes owner extraction in #23 possible at all, and how they
+    are assigned across chunks is documented in `ai/transcription.py`.
+    """
+
+    record = models.OneToOneField(
+        MeetingRecord,
+        on_delete=models.CASCADE,
+        related_name="transcript",
+    )
+    text = models.TextField()
+    # What the API reported, when it reported anything. The diarizing model
+    # does not return a detected language, so this is usually blank rather than
+    # guessed at; a blank language is "nobody said", not "English".
+    language = models.CharField(max_length=20, blank=True)
+    # Null for a transcript that arrived as text: there was no audio, so there
+    # is no length, and zero would be a measurement nobody made.
+    duration_seconds = models.FloatField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering: ClassVar[list[str]] = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"Transcript of record {self.record_id} ({len(self.text)} characters)"
+
+
 #: One sentence per status, in the words the facilitator sees. Keyed by the
 #: stored value so a status added later shows up here as a KeyError rather than
 #: as a blank line on the page.
