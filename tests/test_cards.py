@@ -34,8 +34,8 @@ from django.test import Client
 from django.urls import reverse
 
 from cycles.models import CARD_TEXT_MAX_LENGTH, Card, FeedbackCycle
-from cycles.views import can_add_card, can_delete_card, can_edit_card, can_view_card
 from projects.models import Membership, Project
+from projects.permissions import can_add_card, can_delete_card, can_edit_card, can_view_card
 
 User = get_user_model()
 
@@ -952,10 +952,10 @@ def test_a_closed_cycle_with_no_cards_says_that_instead_of_offering_a_form(
 # --------------------------------------------------------------------------
 # The rules themselves
 #
-# They are one-line predicates at the top of cycles/views.py, named as #6 will
-# name them, so #6 lifts them into projects/permissions.py unchanged. The tests
-# below pin the names and the answers; the tests above prove the views actually
-# ask them.
+# They were one-line predicates at the top of cycles/views.py until #6 lifted
+# them into projects/permissions.py, which is where they are imported from now.
+# The tests below pin the names and the answers; the tests above prove the
+# views actually ask them.
 # --------------------------------------------------------------------------
 
 
@@ -1004,26 +1004,26 @@ def test_a_card_without_an_author_is_nobodys_to_read_or_change(
     assert can_delete_card(member, card) is False
 
 
-def test_the_rules_live_at_the_top_of_the_module_that_enforces_them() -> None:
-    """One module for the application's rules — #6 consolidates, nothing else does.
+def test_the_card_rules_live_in_the_one_permissions_module() -> None:
+    """One module for the application's rules — #6 consolidated them there.
 
-    Until #6 runs, an app's rules sit under a `# Rules` banner at the top of the
-    module that enforces them. A `permissions.py` in this app would be the
-    second permissions module the whole arrangement exists to prevent.
+    The `# Rules` banner this app carried had #6 as its deletion date. What
+    replaces it is `projects/permissions.py`; a `permissions.py` in this app
+    would be the second permissions module the whole arrangement exists to
+    prevent.
     """
-    source = (BASE_DIR / "cycles" / "views.py").read_text()
+    rules = (BASE_DIR / "projects" / "permissions.py").read_text()
+    views = (BASE_DIR / "cycles" / "views.py").read_text()
     names = ["can_add_card", "can_view_card", "can_edit_card", "can_delete_card"]
 
-    assert "# Rules." in source
-    banner = source.index("# Rules.")
     for name in names:
-        assert f"def {name}(" in source
-        assert source.index(f"def {name}(") > banner
-        # Above the views, not scattered among them.
-        assert source.index(f"def {name}(") < source.index("def cycle_create(")
+        assert f"def {name}(" in rules
+        # This app asks them; it no longer defines them.
+        assert f"def {name}(" not in views
+        assert name in views
 
+    assert "# Rules." not in views
     assert not (BASE_DIR / "cycles" / "permissions.py").exists()
-    assert not (BASE_DIR / "projects" / "permissions.py").exists()
 
 
 # --------------------------------------------------------------------------

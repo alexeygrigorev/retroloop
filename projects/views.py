@@ -1,9 +1,8 @@
 """Project views.
 
-The access rules live here as one-line predicates rather than inside the
-queries or the templates. Issue #6 moves them into `projects/permissions.py`
-unchanged; until then this module is the single place that decides who may see
-or do what. Templates only ever hide what a view already refuses.
+Who may do what is decided in `projects/permissions.py` and asked here. This
+module holds the enforcement — the 404s and the 403s — and the templates only
+ever hide what a view already refuses.
 """
 
 import uuid
@@ -18,33 +17,25 @@ from django.views.decorators.http import require_POST
 
 from projects.forms import ProjectForm
 from projects.models import Membership, Project
+from projects.permissions import (
+    can_open_cycle,
+    can_rotate_join_token,
+    can_view_project,
+)
 
 # --------------------------------------------------------------------------
-# Rules. One condition each, so #6 can lift them out as they are.
+# Enforcement. Not a rule: it raises, so it does not belong in permissions.py.
 # --------------------------------------------------------------------------
-
-
-def is_member(user, project: Project) -> bool:
-    return Membership.objects.filter(project=project, user=user).exists()
-
-
-def is_facilitator(user, project: Project) -> bool:
-    return Membership.objects.filter(
-        project=project, user=user, role=Membership.Role.FACILITATOR
-    ).exists()
-
-
-def can_rotate_join_token(user, project: Project) -> bool:
-    return project.owner_id == user.pk or is_facilitator(user, project)
 
 
 def member_or_404(user, project: Project) -> None:
     """Hide a project from everyone who is not on it.
 
     A non-member gets the same answer as someone guessing at an id that was
-    never used, because 403 would confirm that the project exists.
+    never used, because 403 would confirm that the project exists. The
+    condition is `can_view_project`; only the refusal lives here.
     """
-    if not is_member(user, project):
+    if not can_view_project(user, project):
         raise Http404
 
 
@@ -80,11 +71,6 @@ def project_create(request: HttpRequest) -> HttpResponse:
 
 @login_required
 def project_detail(request: HttpRequest, pk: int) -> HttpResponse:
-    # Imported inside the view, not at module level: cycles.views imports the
-    # predicates above, and #6 removes both directions by moving every rule into
-    # projects/permissions.py.
-    from cycles.views import can_open_cycle
-
     project = get_object_or_404(Project, pk=pk)
     member_or_404(request.user, project)
 

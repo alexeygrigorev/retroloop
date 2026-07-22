@@ -34,6 +34,7 @@ from django.urls import reverse
 
 from cycles.models import FeedbackCycle
 from projects.models import Membership, Project
+from projects.permissions import can_advance_stage, can_start_retrospective
 from retro import services
 from retro.models import (
     STAGE_ORDER,
@@ -47,8 +48,6 @@ from retro.services import (
     StageError,
     advance_stage,
     bump_version,
-    can_advance_stage,
-    can_start_retrospective,
     start_retrospective,
 )
 

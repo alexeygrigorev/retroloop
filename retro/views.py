@@ -1,8 +1,9 @@
 """Retrospective views.
 
-They are thin on purpose. Every rule lives in `retro/services.py`; a view's
-whole job is to find the row, refuse the people who may not see it, call the
-service, and turn its rejection into a response. No view assigns `stage`.
+They are thin on purpose. Who may act is decided in `projects/permissions.py`
+and what a transition does lives in `retro/services.py`; a view's whole job is
+to find the row, refuse the people who may not see it, call the service, and
+turn its rejection into a response. No view assigns `stage`.
 """
 
 from django.contrib import messages
@@ -12,12 +13,12 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
 from cycles.models import FeedbackCycle
+from projects.permissions import can_advance_stage
 from projects.views import member_or_404
 from retro.models import Retrospective
 from retro.services import (
     StageError,
     advance_stage,
-    can_advance_stage,
     start_retrospective,
 )
 

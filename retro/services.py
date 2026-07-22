@@ -5,14 +5,9 @@ by exactly one stage, under a row-level lock, with that transition's side
 effects inside the same transaction as the stage write — so a side effect that
 raises leaves the stage where it was rather than half-moving the board.
 
-The access rules live at the top of this module as one-line predicates, in the
-shape `projects/views.py` and `cycles/views.py` already use. Issue #6 lifts
-`can_start_retrospective` and `can_advance_stage` into
-`projects/permissions.py` unchanged and deletes them from here; until then this
-module is the single place that decides who may start a retrospective or move
-it on. There is deliberately no `retro/permissions.py`: one module for the
-whole application is the rule, and these are a temporary shape with #6 as their
-deletion date.
+Who may start a retrospective or move it on is decided in
+`projects/permissions.py` and asked here. There is deliberately no
+`retro/permissions.py`: one module holds the whole application's rules.
 
 The division of labour is fixed: `can_advance_stage` answers *who*, and is
 handed no target stage. Forward-only, single-step and `COMPLETE` being terminal
@@ -25,20 +20,8 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from cycles.models import FeedbackCycle
+from projects.permissions import can_advance_stage, can_start_retrospective
 from retro.models import Retrospective, is_legal_transition, next_stage_after
-
-# --------------------------------------------------------------------------
-# Rules. One condition each, so #6 can lift them out as they are.
-# --------------------------------------------------------------------------
-
-
-def can_start_retrospective(user, cycle: FeedbackCycle) -> bool:
-    return cycle.facilitator_id == user.pk and not hasattr(cycle, "retrospective")
-
-
-def can_advance_stage(user, retro: Retrospective) -> bool:
-    return retro.cycle.facilitator_id == user.pk
-
 
 # --------------------------------------------------------------------------
 # Rejections
@@ -163,7 +146,7 @@ def start_retrospective(user, cycle: FeedbackCycle) -> Retrospective:
     """Create this cycle's retrospective, in DRAFT.
 
     The one-to-one is what makes "at most one per cycle" true; the predicate
-    above only saves the caller from being shown a button that would fail.
+    only saves the caller from being shown a button that would fail.
     """
     if not can_start_retrospective(user, cycle):
         raise PermissionDenied(

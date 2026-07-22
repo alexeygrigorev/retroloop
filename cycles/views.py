@@ -1,12 +1,8 @@
 """Feedback cycle and card views.
 
-The access rules live at the top of this module as one-line predicates, in the
-shape `projects/views.py` already uses. Issue #6 lifts `can_open_cycle`,
-`can_close_cycle`, `can_add_card`, `can_view_card`, `can_edit_card` and
-`can_delete_card` into `projects/permissions.py` unchanged and deletes them from
-here; until then this module is the single place that decides who may open or
-close a cycle and who may read or write a card. Templates only ever hide what a
-view already refuses.
+Who may open or close a cycle, and who may read or write a card, is decided in
+`projects/permissions.py` and asked here. This module holds the enforcement,
+and the templates only ever hide what a view already refuses.
 """
 
 from datetime import timedelta
@@ -24,37 +20,16 @@ from django.views.decorators.http import require_POST
 from cycles.forms import CardForm, FeedbackCycleForm
 from cycles.models import CARD_TEXT_MAX_LENGTH, Card, FeedbackCycle, monday_of
 from projects.models import Project
-from projects.views import is_facilitator, is_member, member_or_404
-from retro.services import can_start_retrospective
-
-# --------------------------------------------------------------------------
-# Rules. One condition each, so #6 can lift them out as they are.
-# --------------------------------------------------------------------------
-
-
-def can_open_cycle(user, project: Project) -> bool:
-    return project.owner_id == user.pk or is_facilitator(user, project)
-
-
-def can_close_cycle(user, cycle: FeedbackCycle) -> bool:
-    return cycle.facilitator_id == user.pk and cycle.status == FeedbackCycle.Status.COLLECTING
-
-
-def can_add_card(user, cycle: FeedbackCycle) -> bool:
-    return cycle.accepts_cards and is_member(user, cycle.project)
-
-
-def can_view_card(user, card: Card) -> bool:
-    return card.author_id is not None and card.author_id == user.pk
-
-
-def can_edit_card(user, card: Card) -> bool:
-    return can_view_card(user, card) and card.cycle.accepts_cards
-
-
-def can_delete_card(user, card: Card) -> bool:
-    return can_view_card(user, card) and card.cycle.accepts_cards
-
+from projects.permissions import (
+    can_add_card,
+    can_close_cycle,
+    can_delete_card,
+    can_edit_card,
+    can_open_cycle,
+    can_start_retrospective,
+    can_view_card,
+)
+from projects.views import member_or_404
 
 # --------------------------------------------------------------------------
 # Views
@@ -109,9 +84,9 @@ def cycle_detail(request: HttpRequest, pk: int) -> HttpResponse:
             "project": cycle.project,
             "can_close": can_close_cycle(request.user, cycle),
             # The retrospective that follows this week, and whether this person
-            # may start it. The rule itself belongs to #9's service module; this
-            # view only asks it, the same way the template only shows what the
-            # view already decided.
+            # may start it. The rule itself lives in projects/permissions.py;
+            # this view only asks it, the same way the template only shows what
+            # the view already decided.
             "retro": getattr(cycle, "retrospective", None),
             "can_start_retro": can_start_retrospective(request.user, cycle),
         },
@@ -150,9 +125,9 @@ def cycle_close(request: HttpRequest, pk: int) -> HttpResponse:
 # Every card query below is filtered by author before anything else happens to
 # it. That filter is the security boundary — a member's own cards are the only
 # rows a card view ever loads, so there is nothing for a template to leak and
-# nothing for a forgotten `{% if %}` to expose. The predicates above are asked
-# in addition, because they are what #6 lifts out and what says *why* an
-# answer was refused.
+# nothing for a forgotten `{% if %}` to expose. The predicates in
+# projects/permissions.py are asked in addition, because they are what says
+# *why* an answer was refused.
 # --------------------------------------------------------------------------
 
 

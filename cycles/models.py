@@ -108,11 +108,13 @@ class FeedbackCycle(models.Model):
 
     @property
     def accepts_cards(self) -> bool:
-        """Whether a card may be created, edited or deleted in this cycle.
+        """Whether this cycle is still in the state where cards may be written.
 
-        The cycle's status is the whole rule. #8 builds the card screens and
-        asks this question before it writes anything; #6 lifts the check into
-        `projects/permissions.py` with the rest.
+        A description of the row, not an access rule: who may add, edit or
+        delete a card is `can_add_card`, `can_edit_card` and `can_delete_card`
+        in `projects/permissions.py`, which read the status themselves. This
+        stays because a template asks the same question of a cycle it is
+        rendering.
         """
         return self.is_collecting
 
