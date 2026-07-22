@@ -255,9 +255,11 @@ def test_every_template_loads_its_assets_from_static() -> None:
             assert asset.startswith("{% static "), (template.name, asset)
 
 
-def test_collectstatic_picks_up_the_built_stylesheet(tmp_path: Path) -> None:
-    if not (BASE_DIR / "static" / "css" / "app.css").is_file():
-        pytest.skip("stylesheet not built yet — run `npm run build:css`")
+def test_collectstatic_picks_up_the_built_stylesheet(
+    built_stylesheet: Path, tmp_path: Path
+) -> None:
+    """The `built_stylesheet` fixture builds it; nothing here skips past it (#54)."""
+    assert built_stylesheet == BASE_DIR / "static" / "css" / "app.css"
 
     with override_settings(STATIC_ROOT=tmp_path / "staticfiles"):
         call_command("collectstatic", "--noinput", verbosity=0)
