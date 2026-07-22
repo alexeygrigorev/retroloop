@@ -48,14 +48,21 @@ function Board({ id, stage, version, cards }) {
         <li data-board-version>Version: {version}</li>
       </ul>
       <p className="list-rows">
-        <button
-          type="button"
-          className="btn-secondary"
-          data-board-toggle
-          onClick={() => setCardsShown((shown) => !shown)}
-        >
-          {cardsShown ? "Hide my cards" : "Show my cards"}
-        </button>
+        {/* The span is a row of the column, so the button inside it keeps its
+            own width instead of being stretched by the flex layout. Only the
+            named components from assets/css/app.css are used here: that file
+            scans templates, so a utility class written in .jsx alone would
+            never be compiled into the stylesheet. */}
+        <span>
+          <button
+            type="button"
+            className="btn-secondary"
+            data-board-toggle
+            onClick={() => setCardsShown((shown) => !shown)}
+          >
+            {cardsShown ? "Hide my cards" : "Show my cards"}
+          </button>
+        </span>
       </p>
       {cardsShown && (
         <ul className="list-rows" data-board-cards>
