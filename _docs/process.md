@@ -105,6 +105,17 @@ produces a scatter of failures and errors that look like a real
 regression and are not - two engineers have now lost time to it. A run
 that fails strangely gets repeated alone before it is believed.
 
+The suite takes about ten minutes, and waiting for it is part of the
+job. Wait inside a command - run it in the foreground, or poll in a
+loop that ends. Nothing wakes an agent that has stopped, so "I will
+report when it finishes" is where the work ends: the run completes and
+nobody reads it. Two agents have finished that way.
+
+The same goes for anything else slow - a container coming back, a CI
+run, a build. Poll it with a ceiling, and if it never arrives say so.
+"Did not recover within two minutes" is a finding, and often a FAIL.
+Silence is not.
+
 Postgres itself stays a single container. Databases inside it are cheap;
 a second container is not.
 
