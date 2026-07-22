@@ -16,11 +16,6 @@ import pytest
 
 from tests.assets import ISLAND, STYLESHEET, ensure_built
 
-# PROOF FOR #72, reverted by the next commit. The whole media pipeline leaves
-# collection here, the quietest way there is to do it: no --ignore in addopts,
-# no deleted file, one line in the conftest #54 introduced.
-collect_ignore = ["test_audio.py"]
-
 
 @pytest.fixture(scope="session")
 def built_stylesheet() -> Path:
