@@ -96,3 +96,53 @@ reset. An admin resets a password with `manage.py changepassword`.
 Why: it removes a whole class of infrastructure and failure modes from an
 internal tool. This is a product decision, not deferred work — there is no
 follow-up issue for it, and there should not be one.
+
+## 9. A card's public identifier is not its primary key
+
+`Card.pk` does not leave the server. It appears in no response body, in no JSON
+embedded in a page, and in no request the server accepts. A card is addressed
+publicly by `Card.public_id`: a random UUID4, written when the card is created,
+unique and never reused. The board payload's `cards[].id` is that value, and
+#12's mutation endpoints take it and refuse a bare integer. #73 adds the column
+and lands before #12.
+
+Why: `Card.pk` comes from a table-wide sequence, so sorting one cycle's ids
+recovers submission order — the exact ordering #10's shuffle exists to destroy,
+with a `SystemRandom` chosen so that no seed anywhere in the process can
+reproduce it. Serializing the sequence hands that ordering back through
+devtools, on a page every member of the project is entitled to open. A defence
+that costs a database connection to break is a trade; one that costs a keystroke
+is not a defence.
+
+Random, and assigned at creation: a counter allocated in submission order is the
+same leak wearing a different type, which also rules out a time-ordered UUID (v1,
+v6, v7). Assigning at reveal instead would leave a card with no handle during the
+week it is being written and edited, and would change a card's identity
+underneath the board at the reveal.
+
+Cost accepted: one UUID column, one unique index, and one migration on a table
+that will hold thousands of rows, not millions. Paid now because #12 mutates by
+this handle and #14 keys React components by it; once those exist, the same
+change costs the migration plus a request-shape change in two more places.
+
+Deliberate exception, decided rather than deferred: the pre-reveal own-card URLs
+from #8 — `card-show`, `card-edit`, `card-delete` — keep the integer pk. Every
+card they address is one the viewer wrote, on a screen that shows nobody else's,
+and item 1 freezes those cards at reveal. The only ordering they expose is the
+viewer's own submission order, which they already know. There is no follow-up
+issue to convert them and there should not be one. New surfaces get no such
+exception: anything that renders, returns or accepts a card from here on uses
+`public_id`.
+
+Scope: this is about `Card`. `Project`, `FeedbackCycle`, `Retrospective` and the
+`Cluster` #12 adds keep their integer pks in URLs and payloads — their creation
+order is not a fact about a person, and clustering happens in front of the whole
+team as it is done.
+
+This does not touch item 3a. The other re-identification route on #69 —
+`CycleParticipation.card_count`, plus day-truncated `submitted_at`, plus the
+`Card.created_at` that survives the reveal — is untouched and still needs the
+owner's call. This decision is worth making either way that one goes: if that
+route is accepted as a stated limit, this one is still the cheaper attack,
+because it needs no database access; if it is closed, an id sequence in a payload
+would become the shortest way back to the same ordering.
