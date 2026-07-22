@@ -1,16 +1,17 @@
-"""The retrospective that follows a feedback cycle.
+"""The retrospective that follows a feedback cycle, and the clusters on its board.
 
-The row is deliberately thin. It holds where the retrospective is (`stage`),
-when it started and finished, how many votes each member gets, and a `version`
-counter that is the whole of the board sync mechanism used by #11 and #12.
+The retrospective row is deliberately thin. It holds where the retrospective is
+(`stage`), when it started and finished, how many votes each member gets, and a
+`version` counter that is the whole of the board sync mechanism used by #11 and
+#12.
 
 Two things are *not* here on purpose:
 
 - the stage machine. `advance_stage()` lives in `retro/services.py`, because a
   transition is a transaction with side effects and a lock, not an assignment.
   Nothing else may write `stage`;
-- any behaviour that depends on cards. Cards arrive with #8; this module never
-  mentions them.
+- any behaviour that depends on cards. Cards arrive with #8; `Cluster` names no
+  card, and the relation is `Card.cluster` on the card's side.
 """
 
 from typing import ClassVar
@@ -122,3 +123,80 @@ def is_legal_transition(from_stage: str, to_stage: str) -> bool:
     if from_stage not in STAGE_ORDER or to_stage not in STAGE_ORDER:
         return False
     return next_stage_after(from_stage) == to_stage
+
+
+#: What a cluster's name may not be longer than. The mutation endpoints say it
+#: and Postgres says it, so a request that goes round the endpoint still hits
+#: the cap rather than a 500 out of the database driver.
+CLUSTER_NAME_MAX_LENGTH = 100
+
+
+class Cluster(models.Model):
+    """One group of cards on one retrospective's board.
+
+    A cluster belongs to the retrospective and not to the cycle: it is made
+    during the retrospective, by the team, in front of the team. Cards join it
+    from the other side, through `Card.cluster`, which is nullable because an
+    ungrouped card is the normal state of every card until someone moves it.
+
+    Two fields exist for issues that are not this one, and are written down here
+    because the column is cheaper to add now than to migrate onto a populated
+    table later:
+
+    - `is_auto_generated` marks the rows #22's clustering job writes. It affects
+      display wording only. A suggested cluster is renamed, merged, split and
+      deleted by exactly the same endpoints as a hand-made one, and nothing in
+      `board/` branches on it;
+    - `status` is the discussion state #16 moves a cluster through. #12 creates
+      every cluster `PENDING` and never changes it — the transitions are #16's.
+
+    Unlike `Card`, a cluster is addressed publicly by its integer primary key,
+    in requests and in the payload alike — `_docs/decisions.md` item 9 is about
+    `Card`, and says so: the order clusters were created in is not a fact about
+    a person, so a sequence in the payload gives nothing away. A cluster
+    deliberately has no `public_id`, and `tests/test_public_id.py` asserts that
+    no model but `Card` has one.
+
+    There is no `created_at` either. Nothing needs it — the board is ordered by
+    `position` — and a timestamp on a row a card points at is one more thing for
+    a later feature to correlate with `Card.created_at`.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        DISCUSSED = "DISCUSSED", "Discussed"
+        SKIPPED = "SKIPPED", "Skipped"
+        DEFERRED = "DEFERRED", "Deferred"
+
+    retrospective = models.ForeignKey(
+        Retrospective,
+        on_delete=models.CASCADE,
+        related_name="clusters",
+    )
+    name = models.CharField(max_length=CLUSTER_NAME_MAX_LENGTH)
+    # Where the cluster sits on the board. Handed out as max + 1 when a cluster
+    # is created, under the retrospective's row lock, so two clusters created at
+    # the same instant cannot land on one number.
+    position = models.IntegerField(default=0)
+    is_auto_generated = models.BooleanField(default=False)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+
+    class Meta:
+        # `id` as the tie-breaker, so the board's order is total and a payload
+        # cannot come back in a different order from one poll to the next.
+        ordering: ClassVar[list[str]] = ["position", "id"]
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            # The endpoints reject a blank name with a sentence; this is the
+            # same rule where an endpoint cannot be gone round.
+            models.CheckConstraint(
+                condition=~models.Q(name__regex=r"^\s*$"),
+                name="retro_cluster_name_not_blank",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.retrospective_id})"

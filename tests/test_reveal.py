@@ -353,6 +353,14 @@ def test_the_card_table_carries_no_second_place_to_keep_a_former_author(
     `public_id` is on the list because #73 added it, and it says nothing about
     anyone: a random UUID4 written when the card is created, which is the handle
     the card is addressed by outside the server — `_docs/decisions.md` item 9.
+
+    `cluster_id` is on the list because #12 added it, and it names no person
+    either: it points at a `Cluster`, a group of cards the team makes in front
+    of the team, which has no author, no user and no foreign key to one. It
+    cannot become a second place to keep a former author, because the row it
+    points at holds nobody — and the sweep above, which fails any table that
+    references both a card and a user, covers the cluster table too.
+
     A column added here later still has to be argued for in this docstring
     before this assertion will pass, which is the point of listing them whole.
     """
@@ -374,6 +382,7 @@ def test_the_card_table_carries_no_second_place_to_keep_a_former_author(
         "position",
         "created_at",
         "public_id",
+        "cluster_id",
     }
 
 

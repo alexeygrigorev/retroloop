@@ -31,6 +31,12 @@ handle that is supposed to be there. Only then does it assert what is absent.
 order, which is the whole thing `cycles/reveal.py` shuffles to destroy. So the
 tests check the UUID version, and check that twenty cards written in order do
 not come back in that order when sorted by their handles.
+
+Section E belongs to #12 rather than #73, and is here because this is where the
+sweep lives. #12's seven mutation endpoints are a new surface: they accept a
+card id and they answer with a body full of cards, so both halves of item 9 —
+the pk is not accepted, and the pk does not leave — are asserted over every one
+of them, in the same style and with the same distinctive primary keys.
 """
 
 import json
@@ -52,7 +58,7 @@ from django.urls.converters import IntConverter
 from board import serializers
 from cycles.models import Card, FeedbackCycle
 from projects.models import Membership, Project
-from retro.models import STAGE_ORDER, Retrospective
+from retro.models import STAGE_ORDER, Cluster, Retrospective
 from retro.services import advance_stage
 from retro.views import board_bootstrap
 
@@ -438,6 +444,17 @@ def migration_that_adds_the_column() -> tuple[str, migrations.Migration]:
     return found[0]
 
 
+def latest_migrations() -> list[tuple[str, str]]:
+    """Every app's newest migration — the state the database has to end up in.
+
+    Read off the graph, so a migration added after this test was written is
+    restored too. Naming one migration here would silently stop restoring the
+    ones that come after it, and the failure would land in whichever test ran
+    next rather than in this one.
+    """
+    return MigrationLoader(None, ignore_no_migrations=True).graph.leaf_nodes()
+
+
 def test_the_column_arrives_in_three_operations_and_not_in_one() -> None:
     """Add it nullable, fill it in per row, then tighten it. In that order.
 
@@ -503,7 +520,10 @@ def test_the_migration_gives_every_row_of_a_populated_table_its_own_value(
 
     It ends where it started, whatever happens in between: the `finally` puts
     the database back at the latest migration so no later test in the session
-    meets a half-migrated schema.
+    meets a half-migrated schema. "The latest" is asked of the graph rather than
+    written down as the migration under test — #12 added `cycles.0005`, which
+    unapplying this one takes with it, and a restore that stopped here would
+    leave every later test looking at a table with no `cluster_id` column.
     """
     name, migration = migration_that_adds_the_column()
     (before,) = [dependency for dependency in migration.dependencies if dependency[0] == APP]
@@ -529,7 +549,7 @@ def test_the_migration_gives_every_row_of_a_populated_table_its_own_value(
             cursor.execute(f"SELECT id, public_id FROM {TABLE}")
             rows = cursor.fetchall()
     finally:
-        MigrationExecutor(connection).migrate([after])
+        MigrationExecutor(connection).migrate(latest_migrations())
 
     handles = [handle for _pk, handle in rows]
     assert {pk for pk, _handle in rows} == existing
@@ -794,3 +814,163 @@ def test_the_bootstrap_function_itself_returns_no_primary_key(
         for card in Card.objects.filter(cycle=retro.cycle):
             assert value != card.pk
             assert value != str(card.pk)
+
+
+# --------------------------------------------------------------------------
+# E. The mutation endpoints (#12), which are a new surface
+# --------------------------------------------------------------------------
+
+#: The card in the cluster, the ungrouped one, and the one a move puts back.
+HELD, LOOSE = 0, 1
+
+
+@pytest.fixture
+def clusters(retro: Retrospective, owner: User, board: list[Card]) -> list[Cluster]:
+    """The same board, in CLUSTER, with two clusters and one card in the first.
+
+    Two, because a merge needs a source and a target and merging a cluster into
+    itself is refused — the sweeps below run against successful requests, so
+    every body has to be one the endpoint accepts.
+    """
+    advance_to(retro, owner, Stage.CLUSTER)
+    made = [
+        Cluster.objects.create(retrospective=retro, name=name, position=position)
+        for position, name in enumerate(["Deploys", "Reviews"], start=1)
+    ]
+    Card.objects.filter(pk=board[HELD].pk).update(cluster=made[0])
+    return made
+
+
+def mutation_bodies(board: list[Card], clusters: list[Cluster]) -> dict[str, dict]:
+    """A valid body for each of #12's seven endpoints, keyed by URL name."""
+    first, second = clusters
+    return {
+        "board-card-move": {"card": str(board[LOOSE].public_id), "cluster": first.pk},
+        "board-card-ungroup": {"card": str(board[HELD].public_id)},
+        "board-cluster-create": {"name": "Onboarding"},
+        "board-cluster-rename": {"cluster": first.pk, "name": "Deployment pain"},
+        "board-cluster-merge": {"source": second.pk, "target": first.pk},
+        "board-cluster-split": {"cluster": first.pk, "cards": [str(board[HELD].public_id)]},
+        "board-cluster-delete": {"cluster": first.pk},
+    }
+
+
+#: Every endpoint #12 adds, so no sweep here covers only the convenient ones.
+MUTATION_URLS = [
+    "board-card-move",
+    "board-card-ungroup",
+    "board-cluster-create",
+    "board-cluster-rename",
+    "board-cluster-merge",
+    "board-cluster-split",
+    "board-cluster-delete",
+]
+
+#: The endpoints that name a card: the field it is named in, and which card of
+#: the fixture that body names.
+CARD_FIELDS = {
+    "board-card-move": ("card", LOOSE),
+    "board-card-ungroup": ("card", HELD),
+    "board-cluster-split": ("cards", HELD),
+}
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("url_name", list(CARD_FIELDS))
+def test_a_mutation_endpoint_refuses_a_bare_primary_key_and_acts_on_nothing(
+    client: Client,
+    retro: Retrospective,
+    ada: User,
+    board: list[Card],
+    clusters: list[Cluster],
+    url_name: str,
+) -> None:
+    """Item 9's request half, at every endpoint that takes a card.
+
+    404 — the same answer as any id that does not resolve — and never a fallback
+    to a primary-key lookup, which the unchanged grouping is what proves. The
+    guards assert first that the number really is this card's primary key, so
+    the test cannot pass by posting something that could never have resolved.
+    """
+    log_in(client, ada)
+    field, index = CARD_FIELDS[url_name]
+    card = board[index]
+    before = sorted(Card.objects.values_list("pk", "cluster_id"))
+
+    assert card.pk >= DISTINCTIVE_PK
+    assert Card.objects.filter(pk=card.pk, cycle=retro.cycle).exists()
+
+    posted = str(card.pk)
+    body = mutation_bodies(board, clusters)[url_name] | {
+        field: [posted] if field == "cards" else posted
+    }
+    response = client.post(reverse(url_name, args=[retro.pk]), body)
+
+    assert response.status_code == 404
+    assert sorted(Card.objects.values_list("pk", "cluster_id")) == before
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("url_name", list(CARD_FIELDS))
+def test_the_same_mutation_succeeds_when_the_card_is_named_by_its_handle(
+    client: Client,
+    retro: Retrospective,
+    ada: User,
+    board: list[Card],
+    clusters: list[Cluster],
+    url_name: str,
+) -> None:
+    """The control: what the refusal above is a refusal *of*."""
+    log_in(client, ada)
+
+    response = client.post(
+        reverse(url_name, args=[retro.pk]), mutation_bodies(board, clusters)[url_name]
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("url_name", MUTATION_URLS)
+def test_no_cards_primary_key_appears_in_what_a_mutation_answers_with(
+    client: Client,
+    retro: Retrospective,
+    ada: User,
+    board: list[Card],
+    clusters: list[Cluster],
+    url_name: str,
+) -> None:
+    """The sweep, over the seven new bodies, with the same guards as the others.
+
+    A mutation answers with the whole board, so it is exactly as capable of
+    leaking a primary key as the state endpoint is. It is swept rather than
+    assumed to be covered by the fact that it calls the same serializer, because
+    "it calls the same function" is the kind of thing that is true until it is
+    not.
+    """
+    log_in(client, ada)
+
+    response = client.post(
+        reverse(url_name, args=[retro.pk]), mutation_bodies(board, clusters)[url_name]
+    )
+    raw = response.content.decode()
+    payload = response.json()
+    cards = list(Card.objects.filter(cycle=retro.cycle))
+
+    # Guard 1: the request succeeded, so there is a real board in the body.
+    assert response.status_code == 200, raw
+    # Guard 2: it carries cards.
+    assert payload["cards"]
+    # Guard 3: their pks are the distinctive ones, so a hit is unambiguous.
+    assert all(card.pk >= DISTINCTIVE_PK for card in cards)
+    # Guard 4: the same substring search finds a handle that is present, so
+    # "not in body" below is a fact about the pk and not about a broken search.
+    for card in payload["cards"]:
+        assert card["id"] in raw
+        assert uuid.UUID(card["id"]).version == 4
+
+    for card in cards:
+        assert str(card.pk) not in raw, f"card {card.pk} is in the {url_name} body"
+        for value in values_in(payload):
+            assert value != card.pk, f"card {card.pk} is a value in the {url_name} body"
+            assert value != str(card.pk), f"card {card.pk} is a value in the {url_name} body"

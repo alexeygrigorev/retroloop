@@ -24,11 +24,15 @@ selection in the serializer is `can_view_card` written as a query, so one test
 walks every card at every stage and asserts the two agree, rather than trusting
 that they do.
 
-Two criteria cannot be fully exercised yet and say so where they are tested:
-`Cluster` arrives with #12 and `Vote` with #15, so the clusters list and the
-vote totals are empty. What is tested today is the *gate* — that the totals key
-does not exist while the stage is `VOTE` and does from `DISCUSS` — which is the
-half that leaks if it is wrong.
+One criterion cannot be fully exercised yet and says so where it is tested:
+`Vote` arrives with #15, so the vote totals are empty. What is tested today is
+the *gate* — that the totals key does not exist while the stage is `VOTE` and
+does from `DISCUSS` — which is the half that leaks if it is wrong.
+
+`Cluster` arrived with #12. The fixtures here still build a board of ungrouped
+cards, which is what every board looks like before anyone clusters it, so the
+payload assertions below are unchanged and still exact; the clusters in the
+payload and the endpoints that put them there are `tests/test_board_mutations.py`.
 """
 
 import re
@@ -47,7 +51,7 @@ from board import serializers
 from cycles.models import Card, FeedbackCycle
 from projects.models import Membership, Project
 from projects.permissions import can_see_vote_totals, can_view_card
-from retro.models import STAGE_ORDER, Retrospective
+from retro.models import STAGE_ORDER, Cluster, Retrospective
 from retro.services import advance_stage
 
 User = get_user_model()
@@ -899,36 +903,54 @@ def test_a_deactivated_member_gets_404(
 # --------------------------------------------------------------------------
 
 #: Session, user, the retrospective with its cycle and project, the membership
-#: `can_view_project` reads, and the cards. Five, whatever the board holds.
-FULL_STATE_QUERIES = 5
+#: `can_view_project` reads, the cards, and the clusters. Six, whatever the
+#: board holds. The sixth arrived with #12: `cluster_payloads()` is one query
+#: for the whole board, and a card's cluster is read off `cluster_id`, which is
+#: already on the row.
+FULL_STATE_QUERIES = 6
 
 
 @pytest.mark.django_db
-def test_the_query_count_does_not_grow_with_the_number_of_cards(
+def test_the_query_count_does_not_grow_with_the_number_of_cards_or_clusters(
     client: Client, retro: Retrospective, ada: User, owner: User, bruno: User
 ) -> None:
     """A fixed count, measured against a board of forty cards and one of four.
 
-    Clusters and votes are not in the comparison because `Cluster` (#12) and
-    `Vote` (#15) do not exist yet — the serializer reaches them through one
-    function each, and the endpoint's cost cannot grow with rows that no table
-    holds. #12 and #15 extend this test with their own models.
+    Clusters are in the comparison from #12: the board grows from two clusters
+    to twelve, and every card in the large board is grouped, so a serializer
+    that reached for a card's cluster object per card — or for a cluster's cards
+    per cluster — fails here rather than in production on a real board.
+
+    Votes are still out of it because `Vote` (#15) does not exist yet. The
+    serializer reaches them through one function, and the endpoint's cost cannot
+    grow with rows that no table holds; #15 extends this test with its own.
     """
+    small_clusters = [
+        Cluster.objects.create(retrospective=retro, name=f"small cluster {index}", position=index)
+        for index in range(2)
+    ]
     for index in range(4):
-        make_card(retro.cycle, bruno, f"small board card {index}")
+        card = make_card(retro.cycle, bruno, f"small board card {index}")
+        Card.objects.filter(pk=card.pk).update(cluster=small_clusters[index % 2])
     advance_to(retro, owner, Stage.REVEAL)
     log_in(client, ada)
 
     with CaptureQueriesContext(connection) as small:
         assert get_state(client, retro).status_code == 200
 
+    large_clusters = [
+        Cluster.objects.create(retrospective=retro, name=f"large cluster {index}", position=index)
+        for index in range(2, 12)
+    ]
     for index in range(36):
-        make_card(retro.cycle, bruno, f"large board card {index}")
+        card = make_card(retro.cycle, bruno, f"large board card {index}")
+        Card.objects.filter(pk=card.pk).update(cluster=large_clusters[index % 10])
 
     with CaptureQueriesContext(connection) as large:
         response = get_state(client, retro)
 
     assert len(response.json()["cards"]) == 40
+    assert len(response.json()["clusters"]) == 12
     assert len(small.captured_queries) == FULL_STATE_QUERIES
     assert len(large.captured_queries) == FULL_STATE_QUERIES
 

@@ -200,6 +200,25 @@ class Card(models.Model):
         related_name="cards",
     )
     is_anonymous = models.BooleanField(default=False)
+    # The group this card is in on the board, or NULL for an ungrouped card.
+    # Ungrouped is normal and not an error state: it is what every card is until
+    # someone moves it, and what a card returns to when its cluster is deleted.
+    #
+    # Named as a string rather than imported: `retro.models` imports
+    # `FeedbackCycle` from here, so importing `Cluster` back would be a circular
+    # import. The relation still points at the cluster's primary key like every
+    # other foreign key in the project — there is no `to_field`.
+    #
+    # SET_NULL, so the database says the same thing #12's delete endpoint says:
+    # deleting a cluster returns its cards to ungrouped and never takes a card
+    # with it. A card outlives every grouping anyone put it in.
+    cluster = models.ForeignKey(
+        "retro.Cluster",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="cards",
+    )
     # Handed out by the reveal, as 1..n in shuffled order. The default of 0
     # therefore means "this card has not been revealed" and can never be
     # mistaken for a real place in the order — see `cycles/reveal.py`.

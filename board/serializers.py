@@ -64,7 +64,15 @@ Otherwise — `v` is absent, stale, or unparseable — the full state::
           "cluster": null          # Cluster id, or null for ungrouped
         }
       ],
-      "clusters": [],              # see below
+      "clusters": [
+        {
+          "id": 4,                 # Cluster.pk — an integer, and see below
+          "name": "Deploys",       # Cluster.name, the team's words
+          "position": 1,           # Cluster.position, the board's order
+          "is_auto_generated": false,  # #22 suggested it; wording only
+          "status": "PENDING"      # Cluster.Status, moved by #16
+        }
+      ],
       "votes": {"mine": [], "remaining": 3},
       "vote_totals": {}            # PRESENT ONLY from DISCUSS on
     }
@@ -78,16 +86,27 @@ receive, so it is one key that is simply absent rather than a set of zeroes or
 nulls spread through the clusters. `can_see_vote_totals` decides, and it is
 False for everyone while the stage is `VOTE`.
 
+A cluster is addressed by its integer primary key, in the payload and in #12's
+requests alike, and it deliberately has no opaque handle. `_docs/decisions.md`
+item 9 is about `Card` and says so: a cluster is made by the team in front of
+the team, so the order clusters were created in is not a fact about a person and
+a sequence in the payload gives nothing away. The asymmetry with `cards[].id` is
+the decision, not an oversight.
+
+`cards[].cluster` is the same integer, or null, and it is the only place the
+grouping is stated. A cluster does not carry a list of its cards: two statements
+of one relation drift, and the client that draws the board has every card in
+front of it already.
+
 What is a fixed empty value today and why:
 
-- `clusters` and `cards[].cluster`: `Cluster` and `Card.cluster` arrive with
-  #12. Until then every card is genuinely ungrouped, so the empty list is the
-  board's real state and not a placeholder.
 - `votes.mine` and `vote_totals`: `Vote` arrives with #15. `votes.remaining` is
   `Retrospective.votes_per_member` until there is anything to spend.
 
-#12 and #15 fill those in by filling in the functions below. They add no second
-serializer, so the shape #13 and #14 are written against cannot drift.
+#15 fills those in by filling in the functions below. It adds no second
+serializer, so the shape #13 and #14 are written against cannot drift — and
+neither did #12, whose seven mutation endpoints answer with `board_state()`
+itself rather than with a body of their own.
 """
 
 from cycles.models import Card, revealed_cards
@@ -193,10 +212,10 @@ def card_payload(card: Card) -> dict:
         "id": str(card.public_id),
         "category": card.category,
         "text": card.text,
-        # Every card is ungrouped until #12 adds `Card.cluster`. It fills this
-        # in with `card.cluster_id`, which is null for an ungrouped card then
-        # as it is now.
-        "cluster": None,
+        # `cluster_id`, not `cluster`: the id is already on the row, so a board
+        # of forty cards costs no query per card, and an ungrouped card is null
+        # here without a branch.
+        "cluster": card.cluster_id,
     }
 
 
@@ -206,13 +225,31 @@ def card_payload(card: Card) -> dict:
 
 
 def cluster_payloads(retro: Retrospective) -> list[dict]:
-    """The board's clusters. Empty until #12 creates the model.
+    """The board's clusters, in `position` order.
 
     Nothing about a cluster is private — its name and its cards are the board —
     so this takes no user. What *is* private is how many votes are on it, which
     is why the totals live in their own key and not in these dicts.
+
+    One query whatever the board holds, and no card is reached from here: the
+    grouping is stated once, on the card. `Cluster.Meta.ordering` is
+    `["position", "id"]`, so the order is total and a poll cannot hand back the
+    same board in a different order.
+
+    No timestamp, for the same reason no card carries one: `position` is what
+    draws the board, and a creation time on a row that cards point at is one
+    more thing to line up against `Card.created_at`.
     """
-    return []
+    return [
+        {
+            "id": cluster.pk,
+            "name": cluster.name,
+            "position": cluster.position,
+            "is_auto_generated": cluster.is_auto_generated,
+            "status": cluster.status,
+        }
+        for cluster in retro.clusters.all()
+    ]
 
 
 def vote_payload(user, retro: Retrospective) -> dict:
