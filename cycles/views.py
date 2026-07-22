@@ -188,6 +188,27 @@ def lock_the_cycle_of(pk: int) -> None:
     FeedbackCycle.objects.select_for_update().get(pk=cycle_id)
 
 
+def with_controls(user, card: Card) -> Card:
+    """Attach to `card` whether this person may edit it and whether they may
+    delete it, which is what the template shows those two controls from.
+
+    The window itself — `_docs/decisions.md` item 1, the author while the cycle
+    is COLLECTING — is written once, in `projects/permissions.py`, and asked
+    here the way `can_add` is already asked for a section. The template reads
+    the answer and asks nothing of its own, so moving the window moves the
+    buttons with it. It used to hide the two controls on the cycle's own status
+    property instead — the status half of this rule written a second time, which
+    agreed with the predicate only for as long as nobody moved the window (#66).
+
+    Costs no query. Both predicates read `card.author_id` and the status of
+    `card.cycle`, and every card query in this module fetches the cycle with the
+    card, so a page of thirty cards costs exactly what a page of one costs.
+    """
+    card.can_edit = can_edit_card(user, card)
+    card.can_delete = can_delete_card(user, card)
+    return card
+
+
 def card_section(request: HttpRequest, cycle: FeedbackCycle, category: str, form=None) -> dict:
     """Everything one Start/Stop/Continue section needs to render itself.
 
@@ -200,7 +221,10 @@ def card_section(request: HttpRequest, cycle: FeedbackCycle, category: str, form
         "cycle": cycle,
         "category": category,
         "category_label": Card.Category(category).label,
-        "cards": own_cards(request.user, cycle).filter(category=category),
+        "cards": [
+            with_controls(request.user, card)
+            for card in own_cards(request.user, cycle).filter(category=category)
+        ],
         "form": form,
         "remaining": CARD_TEXT_MAX_LENGTH - len(form.data.get("text", "") if form.is_bound else ""),
         "can_add": can_add_card(request.user, cycle),
@@ -303,7 +327,11 @@ def card_show(request: HttpRequest, pk: int) -> HttpResponse:
     if not can_view_card(request.user, card):
         raise Http404
 
-    return render(request, "cycles/card_list.html#card", {"card": card, "cycle": card.cycle})
+    return render(
+        request,
+        "cycles/card_list.html#card",
+        {"card": with_controls(request.user, card), "cycle": card.cycle},
+    )
 
 
 @login_required
@@ -339,7 +367,11 @@ def card_edit(request: HttpRequest, pk: int) -> HttpResponse:
             form.save(commit=False).save(update_fields=list(CardForm.Meta.fields))
 
     if saved:
-        return render(request, "cycles/card_list.html#card", {"card": card, "cycle": card.cycle})
+        return render(
+            request,
+            "cycles/card_list.html#card",
+            {"card": with_controls(request.user, card), "cycle": card.cycle},
+        )
 
     return render(
         request,

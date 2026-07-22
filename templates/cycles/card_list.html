@@ -110,9 +110,17 @@
 {% endpartialdef %}
 
 {% comment %}
-  One card, read-only. The controls are shown only while the cycle is
-  collecting; card_edit and card_delete ask the same question again and refuse
-  anyone the template merely stopped showing a button to.
+  One card, read-only. Each control is shown from the flag the view attached to
+  this card — `card.can_edit` and `card.can_delete`, which are `can_edit_card`
+  and `can_delete_card` from `projects/permissions.py` asked about this person
+  and this card. Nothing here reads the cycle's status any more: the status
+  property this file used to hide the controls on was the same rule written a
+  second time, and the two could have disagreed in silence the moment the window
+  in `_docs/decisions.md` item 1 moved (issue #66).
+
+  Hiding is not the rule either way. card_edit and card_delete ask the same two
+  predicates again and refuse anyone the template merely stopped showing a
+  button to.
 {% endcomment %}
 {% partialdef card %}
   <li id="card-{{ card.pk }}" data-card="{{ card.pk }}" class="panel">
@@ -123,7 +131,7 @@
       </p>
     {% endif %}
 
-    {% if card.cycle.accepts_cards %}
+    {% if card.can_edit or card.can_delete %}
       {% comment %}
         The plain `{% url %}` tag, here and in every partial below. The `as var`
         form swallows a NoReverseMatch and renders an empty attribute instead —
@@ -132,29 +140,33 @@
         the views hand them, so the tag has a card to reverse against.
       {% endcomment %}
       <div class="mt-4 flex items-center gap-2">
-        <button
-          type="button"
-          hx-get="{% url 'card-edit' card.pk %}"
-          hx-target="#card-{{ card.pk }}"
-          hx-swap="outerHTML"
-          class="btn-secondary"
-        >Edit</button>
+        {% if card.can_edit %}
+          <button
+            type="button"
+            hx-get="{% url 'card-edit' card.pk %}"
+            hx-target="#card-{{ card.pk }}"
+            hx-swap="outerHTML"
+            class="btn-secondary"
+          >Edit</button>
+        {% endif %}
 
-        {% comment %}
-          A POST with a CSRF token, never a link: a GET that deletes is one
-          prefetch away from deleting by itself. card_delete is require_POST, so
-          a GET is a 405 whatever this markup says.
-        {% endcomment %}
-        <form
-          method="post"
-          action="{% url 'card-delete' card.pk %}"
-          hx-post="{% url 'card-delete' card.pk %}"
-          hx-target="#section-{{ card.category }}"
-          hx-swap="outerHTML"
-        >
-          {% csrf_token %}
-          <button type="submit" class="btn-secondary">Delete</button>
-        </form>
+        {% if card.can_delete %}
+          {% comment %}
+            A POST with a CSRF token, never a link: a GET that deletes is one
+            prefetch away from deleting by itself. card_delete is require_POST,
+            so a GET is a 405 whatever this markup says.
+          {% endcomment %}
+          <form
+            method="post"
+            action="{% url 'card-delete' card.pk %}"
+            hx-post="{% url 'card-delete' card.pk %}"
+            hx-target="#section-{{ card.category }}"
+            hx-swap="outerHTML"
+          >
+            {% csrf_token %}
+            <button type="submit" class="btn-secondary">Delete</button>
+          </form>
+        {% endif %}
       </div>
     {% endif %}
   </li>

@@ -133,8 +133,9 @@ def scene(name: str) -> tuple[dict, HttpRequest]:
         opens_at=OPENS_AT,
         closes_at=CLOSES_AT,
         facilitator=user,
-        # Drives `card.cycle.accepts_cards`, which is what shows and hides the
-        # Edit and Delete controls on a card.
+        # Drives the cards the sections carry: `card_section()` below asks
+        # `can_add_card` and `can_edit_card` about this cycle, and a closed one
+        # answers no to both.
         status=FeedbackCycle.Status.COLLECTING if permitted else FeedbackCycle.Status.CLOSED,
     )
     card = Card.objects.create(
@@ -143,6 +144,12 @@ def scene(name: str) -> tuple[dict, HttpRequest]:
         text="Pair on the deploy script before Thursday.",
         author=user,
     )
+    # The per-card flags the view attaches, set here rather than computed, like
+    # every other permission flag in this scene: what the sweeps need is that
+    # both sides of each `{% if %}` are rendered somewhere. Which answer
+    # `can_edit_card` gives this person is the subject of tests/test_cards.py.
+    card.can_edit = permitted
+    card.can_delete = permitted
     retro = Retrospective.objects.create(
         cycle=cycle,
         stage=Retrospective.Stage.DISCUSS if permitted else Retrospective.Stage.COMPLETE,
