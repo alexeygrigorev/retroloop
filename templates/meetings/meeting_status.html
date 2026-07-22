@@ -1,0 +1,75 @@
+{% comment %}
+  Where the meeting has got to. Included by the upload page and served on its
+  own to htmx, so what the page shows and what a poll returns are one piece of
+  markup.
+
+  It asks for itself again every three seconds while there is something to
+  wait for, and comes back without the hx- attributes once the record is READY
+  or FAILED — which is how the polling stops: the last fragment to arrive is
+  the one that does not ask again.
+
+  `status_url` comes from the view rather than from `{% url %}`, because this
+  file is also rendered on its own with no record in the context.
+{% endcomment %}
+<div
+  id="meeting-status"
+  class="panel mt-8"
+  data-meeting-record="{{ record.pk }}"
+  data-polling="{% if polling %}true{% else %}false{% endif %}"
+  {% if polling %}
+    hx-get="{{ status_url }}"
+    hx-trigger="every 3s"
+    hx-swap="outerHTML"
+  {% endif %}
+>
+  <h2 class="section-heading">Progress</h2>
+
+  {% if record %}
+    <p class="mt-2 text-sm" role="status">{{ record.progress }}</p>
+
+    {% if failed %}
+      {% comment %}
+        The failure, in the terms `_docs/decisions.md` item 6 settles: the
+        recording is deleted whether transcription worked or not, so there is
+        nothing left to run again and no button that could. Saying so is the
+        whole of the recovery instruction.
+      {% endcomment %}
+      <p class="mt-2 text-sm text-red-900">{{ record.error_message }}</p>
+      <p class="mt-2 text-sm text-slate-600">
+        The recording was deleted as the attempt ended, so it cannot be run
+        again from here. Upload the file once more to start over.
+      </p>
+    {% endif %}
+
+    <dl class="list-rows">
+      <div class="flex gap-2">
+        <dt class="font-medium text-slate-700">Handed over</dt>
+        {% comment %}
+          The filename is the one thing on this page a person chose, so it is
+          printed as text and nothing else. Django escapes it here; a file
+          called `<img onerror=...>` reads as its own name and does nothing.
+        {% endcomment %}
+        <dd>{% if record.original_filename %}{{ record.original_filename }}{% else %}Pasted transcript{% endif %}</dd>
+      </div>
+      <div class="flex gap-2">
+        <dt class="font-medium text-slate-700">Kind</dt>
+        <dd>{{ record.get_kind_display }}</dd>
+      </div>
+      <div class="flex gap-2">
+        <dt class="font-medium text-slate-700">Size</dt>
+        <dd>{{ record.size_bytes|filesizeformat }}</dd>
+      </div>
+    </dl>
+
+    {% if record.skips_transcription %}
+      <p class="mt-2 text-sm text-slate-600">
+        This one arrived as text, so there is nothing to transcribe — it goes
+        straight to reading out the decisions and the actions.
+      </p>
+    {% endif %}
+  {% else %}
+    <p class="mt-2 text-sm">
+      Nothing has been handed over for this retrospective yet.
+    </p>
+  {% endif %}
+</div>

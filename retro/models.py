@@ -74,6 +74,16 @@ class Retrospective(models.Model):
     def is_complete(self) -> bool:
         return self.stage == self.Stage.COMPLETE
 
+    def has_reached(self, stage: str) -> bool:
+        """Whether this retrospective is at `stage` or past it.
+
+        A question about where the board has got to, asked by the features that
+        only exist from a given stage on — #19's meeting upload is offered from
+        DISCUSS. It says nothing about who is asking; that stays in
+        `projects/permissions.py`.
+        """
+        return STAGE_ORDER.index(self.stage) >= STAGE_ORDER.index(stage)
+
     @property
     def next_stage(self) -> str | None:
         """The one stage this retrospective may move to, or None at the end.

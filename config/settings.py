@@ -69,6 +69,7 @@ INSTALLED_APPS = [
     "projects",
     "cycles",
     "retro",
+    "meetings",
 ]
 
 MIDDLEWARE = [
@@ -153,6 +154,14 @@ STATICFILES_DIRS = [BASE_DIR / "static"]
 # Uploads stream to disk instead of buffering in memory; the media pipeline
 # hands these paths to the worker over a shared volume.
 FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024
+# The same intent for the rest of the request. A meeting upload is capped at
+# 500 MB (`meetings.uploads.MAX_UPLOAD_BYTES`, and `client_max_body_size` in
+# `deploy/nginx.conf`), and none of it is held in memory: the file streams to
+# disk past FILE_UPLOAD_MAX_MEMORY_SIZE, and this says the non-file part of a
+# request may not buffer more than the same megabyte. A pasted transcript is
+# tens of kilobytes, so the cap it puts on pasted text is generous; what it
+# rules out is a request that is large without being a file.
+DATA_UPLOAD_MAX_MEMORY_SIZE = FILE_UPLOAD_MAX_MEMORY_SIZE
 SCRATCH_DIR = Path(os.environ.get("SCRATCH_DIR", BASE_DIR / "scratch"))
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

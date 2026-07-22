@@ -15,6 +15,9 @@ urlpatterns = [
     # Same shape as cycles: starting one lives under its cycle, the
     # retrospective itself under /retrospectives/.
     path("", include("retro.urls")),
+    # And again for the meeting that follows the discussion: handing it over
+    # hangs off the retrospective, the record it creates off itself.
+    path("", include("meetings.urls")),
     # Short and shareable, and outside /projects/ because the person opening it
     # is not a member of anything yet.
     path("join/<uuid:token>/", join_project, name="join-project"),
