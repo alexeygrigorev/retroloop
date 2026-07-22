@@ -94,6 +94,8 @@ and installs ffmpeg itself, so nothing the suite needs is assumed to be there.
   test and all of `tests/test_audio.py` without ffmpeg - would otherwise leave a
   broken run reading green. A test that genuinely has to skip changes that gate
   in the same commit.
+- A newer push to the same branch cancels the run it supersedes, so the run
+  worth reading is always the one for the tip commit.
 - Reproduce a CI run locally with one command:
   `uv sync --locked && npm ci && npm run build:css && uv run ruff check . && uv run ruff format --check . && uv run manage.py makemigrations --check --dry-run && uv run pytest -rs`
   The `-rs` is the point: it lists every skip, which CI turns into a failure.
