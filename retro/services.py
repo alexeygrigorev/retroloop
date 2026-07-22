@@ -20,6 +20,7 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from cycles.models import FeedbackCycle
+from cycles.reveal import reveal_cycle
 from projects.permissions import can_advance_stage, can_start_retrospective
 from retro.models import Retrospective, is_legal_transition, next_stage_after
 
@@ -84,20 +85,27 @@ def bump_version(retro: Retrospective) -> int:
 
 
 def _on_reveal(retro: Retrospective) -> None:
-    """Entering REVEAL.
+    """Entering REVEAL. The one transition that destroys something.
 
-    Closing the cycle is the one part that is this task's own: reveal is the
-    moment collection ends, so there is no state where cards are revealed and
-    the submission form is still open. It happens in this transaction, so the
-    two can never disagree.
+    Closing the cycle comes first: reveal is the moment collection ends, so
+    there is no instant in which cards are revealed and the submission form is
+    still open, and no card can arrive after the shuffle has counted them.
 
-    Not yet implemented, and no-ops until they are:
-    - #10 destroys anonymous authorship and shuffles the positions;
-    - #22 enqueues the clustering job.
+    Then `reveal_cycle()` records participation, shuffles every card's position
+    and sets `author` to NULL on the anonymous ones — `_docs/decisions.md` item
+    3. It runs here, in `advance_stage()`'s transaction, so the stage write and
+    the destruction commit together or not at all. Nothing in it is
+    recoverable, which is why it is reached only through a transition the stage
+    machine allows exactly once.
+
+    Not yet implemented, and a no-op until it is: #22 enqueues the clustering
+    job. It will enqueue on commit, never inside this block.
     """
     if retro.cycle.status == FeedbackCycle.Status.COLLECTING:
         retro.cycle.status = FeedbackCycle.Status.CLOSED
         retro.cycle.save(update_fields=["status"])
+
+    reveal_cycle(retro.cycle)
 
 
 def _on_cluster(retro: Retrospective) -> None:
