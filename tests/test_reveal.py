@@ -36,6 +36,7 @@ import ast
 import json
 import random
 import threading
+import time
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -995,6 +996,95 @@ def test_writing_a_card_locks_the_cycle_row_before_it_reads_the_status(
     assert cycle.cards.count() == 1
 
 
+def statements_touching_cards_and_the_lock(captured) -> tuple[list[int], list[int]]:
+    """Where the cycle lock was taken, and where `cycles_card` was written."""
+    locks, writes = [], []
+    for index, query in enumerate(captured.captured_queries):
+        sql = query["sql"]
+        upper = sql.upper()
+        if "FOR UPDATE" in upper and "cycles_feedbackcycle" in sql:
+            locks.append(index)
+        if "cycles_card" in sql and upper.lstrip().startswith(("UPDATE", "DELETE", "INSERT")):
+            writes.append(index)
+    return locks, writes
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("endpoint", ["card-create", "card-edit", "card-delete", "cycle-close"])
+def test_every_path_that_writes_a_card_takes_the_cycle_lock_first(
+    endpoint: str, client: Client, cycle: FeedbackCycle, ada: User, owner: User
+) -> None:
+    """One rule, asserted at all four call sites rather than at the one that broke.
+
+    Three endpoints write to `cycles_card` and one writes the cycle's status
+    from a value it read; all four have to take the same lock, and take it
+    *before* the write. The lock being first is the half that matters for
+    deadlocks: `advance_stage` goes retrospective, then cycle, then cards, and
+    every path here goes cycle, then card, so no two of them can wait on each
+    other in a circle.
+
+    This is parametrized on purpose. The defect QA found was not a wrong fix,
+    it was a fix applied at one of three places that needed it, and a test
+    written against that one place would have passed.
+    """
+    card = make_card(cycle, ada, "a card of Ada's own")
+    log_in(client, owner if endpoint == "cycle-close" else ada)
+
+    posts = {
+        "card-create": (reverse("card-create", args=[cycle.pk, "START"]), {"text": "another"}),
+        "card-edit": (reverse("card-edit", args=[card.pk]), {"text": "reworded"}),
+        "card-delete": (reverse("card-delete", args=[card.pk]), {}),
+        "cycle-close": (reverse("cycle-close", args=[cycle.pk]), {}),
+    }
+    url, data = posts[endpoint]
+
+    with CaptureQueriesContext(connection) as captured:
+        response = client.post(url, data)
+
+    assert response.status_code in {200, 302}, response.status_code
+    locks, writes = statements_touching_cards_and_the_lock(captured)
+
+    assert locks, [q["sql"] for q in captured.captured_queries]
+    for write in writes:
+        assert write > locks[0], captured.captured_queries[write]["sql"]
+
+
+@pytest.mark.django_db
+def test_re_wording_a_card_cannot_write_the_author_column_at_all(
+    client: Client, cycle: FeedbackCycle, ada: User
+) -> None:
+    """Defence in depth behind the lock, and independent of it.
+
+    A ModelForm's `save()` writes every column from the instance it loaded, so
+    a copy read before the reveal carries the pre-reveal `author_id` and
+    `position` back with the new text. Naming the fields means the `UPDATE`
+    cannot mention either column whatever the instance is holding — so even a
+    caller who loses the lock cannot restore an author through this endpoint.
+    """
+    card = make_card(cycle, ada, "the first wording", anonymous=True)
+    log_in(client, ada)
+
+    with CaptureQueriesContext(connection) as captured:
+        client.post(reverse("card-edit", args=[card.pk]), {"text": "a better wording"})
+
+    updates = [
+        query["sql"]
+        for query in captured.captured_queries
+        if query["sql"].lstrip().upper().startswith("UPDATE") and "cycles_card" in query["sql"]
+    ]
+    assert len(updates) == 1, updates
+    assert "author_id" not in updates[0], updates[0]
+    assert "position" not in updates[0], updates[0]
+    assert "text" in updates[0]
+
+    stored = Card.objects.get(pk=card.pk)
+    assert stored.text == "a better wording"
+    # The checkbox was not posted, so the form cleared it — which is the
+    # behaviour that already existed and is what `is_anonymous` being one of the
+    # form's own fields means.
+    assert stored.author_id == ada.pk
+
+
 @pytest.mark.django_db(transaction=True)
 def test_a_card_written_at_the_instant_of_the_reveal_cannot_keep_its_author() -> None:
     """The narrowest window in the feature, held open on purpose and driven through.
@@ -1064,6 +1154,233 @@ def test_a_card_written_at_the_instant_of_the_reveal_cannot_keep_its_author() ->
     # Whichever order the two transactions settled into, the cycle is coherent:
     # every card in it was seen by the reveal, or is not in it at all.
     assert not cycle.cards.filter(position=0).exists()
+
+
+# --------------------------------------------------------------------------
+# The later window: the reveal has written the cards and not yet committed
+#
+# The test above stands in the window *before* the reveal reads the cards, where
+# a write that gets in first is simply included. This section stands in the
+# window after it: participation is recorded, positions are handed out and the
+# authors are destroyed, and none of it is committed. A writer that reads the
+# cycle's status without a lock still sees COLLECTING, passes the permission
+# check, and blocks on the row lock the reveal is holding — and then applies
+# afterwards, on top of a reveal that has already happened and will not happen
+# again.
+#
+# This is where an edit put a destroyed author back. `Card.save()` from a
+# ModelForm writes the whole row from the instance it loaded, so the `author_id`
+# and `position` it read before the reveal go back with the new text.
+# --------------------------------------------------------------------------
+
+
+def count_backends_waiting_on_a_lock() -> int:
+    """How many other backends on this database are blocked on a lock right now.
+
+    The synchronisation these tests need is "the other request has reached the
+    statement that blocks", and Postgres already knows. Polling it makes the
+    tests deterministic instead of dependent on a sleep long enough to be slow
+    and short enough to be flaky.
+    """
+    with connection.cursor() as cursor:
+        # Postgres caches the backend status snapshot for the whole
+        # transaction, and this poll runs inside the reveal's. Without the
+        # clear, every call after the first returns the same stale picture —
+        # taken before the other request had even connected.
+        cursor.execute("SELECT pg_stat_clear_snapshot()")
+        cursor.execute(
+            "SELECT count(*) FROM pg_stat_activity "
+            "WHERE datname = current_database() "
+            "AND pid <> pg_backend_pid() "
+            "AND wait_event_type = 'Lock'"
+        )
+        return cursor.fetchone()[0]
+
+
+def drive_against_an_uncommitted_reveal(monkeypatch, retro, facilitator, request_):
+    """Run `request_` on another connection inside the reveal's last moment.
+
+    `bump_version` is the last thing `advance_stage` does, so standing in it
+    holds the transaction open with every card already written and nothing
+    committed. The reveal waits there until the other connection is observably
+    blocked on a lock, which is the proof that the two really did overlap: a
+    test that ran them one after the other would pass no matter what the code
+    did.
+    """
+    written = threading.Event()
+    outcome: dict[str, object] = {}
+    real_bump = services.bump_version
+
+    def bump_once_the_other_request_is_blocked(locked: Retrospective) -> int:
+        written.set()
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if count_backends_waiting_on_a_lock():
+                outcome["blocked"] = True
+                break
+            time.sleep(0.05)
+        return real_bump(locked)
+
+    monkeypatch.setattr(services, "bump_version", bump_once_the_other_request_is_blocked)
+
+    def run() -> None:
+        try:
+            written.wait(timeout=20)
+            outcome["status"] = request_()
+        except Exception as error:  # pragma: no cover - reported, not swallowed
+            outcome["error"] = repr(error)
+        finally:
+            connection.close()
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    advance_stage(facilitator, retro)
+    thread.join(timeout=40)
+    assert not thread.is_alive()
+    assert "error" not in outcome, outcome
+    # Without this the test proves nothing: it would mean the request finished
+    # before the reveal ever held anything, which is not the race.
+    assert outcome.get("blocked") is True, outcome
+    return outcome
+
+
+@pytest.fixture
+def racing_cycle(db) -> tuple[Retrospective, User, User, Card, Card]:
+    """A cycle with one anonymous card and one attributed one, ready to reveal."""
+    owner = make_user("olive-window", "Olive Owner")
+    ada = make_user("ada-window", "Ada Racer")
+    project = Project.objects.create(name="Platform", owner=owner)
+    Membership.objects.create(project=project, user=owner, role=Membership.Role.FACILITATOR)
+    Membership.objects.create(project=project, user=ada, role=Membership.Role.MEMBER)
+    cycle = FeedbackCycle.objects.create(
+        project=project,
+        week_start=MONDAY,
+        opens_at=OPENS_AT,
+        closes_at=CLOSES_AT,
+        facilitator=owner,
+    )
+    hidden = make_card(cycle, ada, "written anonymously", anonymous=True)
+    named = make_card(cycle, ada, "written under my name", category=Card.Category.STOP)
+    return Retrospective.objects.create(cycle=cycle), owner, ada, hidden, named
+
+
+def assert_the_reveal_survived(cycle: FeedbackCycle) -> None:
+    """What has to be true of the cycle however the two transactions interleaved.
+
+    No anonymous card carries an author, and the positions are still the
+    contiguous 1..n the reveal handed out. `0` is the documented "not revealed"
+    value, so a card sitting at 0 in a revealed cycle is a card the reveal never
+    saw or a card that had its pre-reveal row written back over it.
+    """
+    assert not cycle.cards.filter(is_anonymous=True, author__isnull=False).exists()
+
+    positions = sorted(cycle.cards.values_list("position", flat=True))
+    assert positions == list(range(1, len(positions) + 1)), positions
+
+    counted = sum(
+        CycleParticipation.objects.filter(cycle=cycle).values_list("card_count", flat=True)
+    )
+    assert counted == cycle.cards.count()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_an_edit_arriving_during_the_reveal_cannot_put_the_author_back(
+    monkeypatch: pytest.MonkeyPatch, racing_cycle
+) -> None:
+    """The defect QA found, driven the way QA drove it.
+
+    A member presses Save on a card of their own at the moment the facilitator
+    presses Advance. The reveal has already destroyed that card's author inside
+    its transaction. An unlocked edit reads the cycle as still COLLECTING, is
+    allowed through, and writes the whole row back from the copy it loaded
+    before the reveal — putting `author_id` and the pre-reveal `position` back
+    on a card that has just been anonymised.
+
+    Nothing ever undoes that. REVEAL is entered once, so the reveal does not
+    come round again, and `can_edit_card` is false forever afterwards because
+    the cycle is CLOSED — so the card cannot even be edited a second time to
+    clear it. The author is back permanently.
+    """
+    retro, owner, ada, hidden, _named = racing_cycle
+    cycle = retro.cycle
+
+    def edit_the_anonymous_card() -> int:
+        writer = Client()
+        writer.login(username=ada.username, password=PASSWORD)
+        return writer.post(
+            reverse("card-edit", args=[hidden.pk]),
+            {"text": "reworded mid-reveal", "is_anonymous": "on"},
+        ).status_code
+
+    outcome = drive_against_an_uncommitted_reveal(
+        monkeypatch, retro, owner, edit_the_anonymous_card
+    )
+
+    assert_the_reveal_survived(cycle)
+    stored = Card.objects.get(pk=hidden.pk)
+    assert stored.author_id is None
+    assert stored.text == "written anonymously"
+    # Refused, not merely harmless: the cycle is CLOSED by the time the request
+    # gets the lock, and an anonymous card has no author left to match against.
+    assert outcome["status"] in {403, 404}, outcome
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_delete_arriving_during_the_reveal_cannot_remove_a_counted_card(
+    monkeypatch: pytest.MonkeyPatch, racing_cycle
+) -> None:
+    """The same window, reached through delete. Not a leak — a decision 1 violation.
+
+    The reveal has counted the card into `CycleParticipation` and given it a
+    position. An unlocked delete that lands afterwards takes the card out from
+    under both: the participation row still counts it, and the positions are
+    left with a hole in them. `_docs/decisions.md` item 1 freezes cards at
+    REVEAL, and this is that freeze being bypassed by timing.
+    """
+    retro, owner, ada, hidden, _named = racing_cycle
+    cycle = retro.cycle
+
+    def delete_the_anonymous_card() -> int:
+        writer = Client()
+        writer.login(username=ada.username, password=PASSWORD)
+        return writer.post(reverse("card-delete", args=[hidden.pk])).status_code
+
+    outcome = drive_against_an_uncommitted_reveal(
+        monkeypatch, retro, owner, delete_the_anonymous_card
+    )
+
+    assert Card.objects.filter(pk=hidden.pk).exists()
+    assert_the_reveal_survived(cycle)
+    assert outcome["status"] in {403, 404}, outcome
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_create_arriving_during_the_reveal_is_refused_in_this_window_too(
+    monkeypatch: pytest.MonkeyPatch, racing_cycle
+) -> None:
+    """The create path, in the later window, as a regression guard.
+
+    An INSERT blocks on no existing row, so nothing stops it landing after the
+    reveal has counted and positioned everything — it would arrive with its
+    author intact and `position` 0. What refuses it is the cycle lock
+    `card_create` takes before it reads the status, which is the same lock the
+    reveal is holding.
+    """
+    retro, owner, ada, _hidden, _named = racing_cycle
+    cycle = retro.cycle
+
+    def write_another_card() -> int:
+        writer = Client()
+        writer.login(username=ada.username, password=PASSWORD)
+        return writer.post(
+            reverse("card-create", args=[cycle.pk, Card.Category.START]),
+            {"text": "slipped in after the shuffle", "is_anonymous": "on"},
+        ).status_code
+
+    drive_against_an_uncommitted_reveal(monkeypatch, retro, owner, write_another_card)
+
+    assert cycle.cards.count() == 2
+    assert_the_reveal_survived(cycle)
 
 
 # --------------------------------------------------------------------------
