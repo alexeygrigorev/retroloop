@@ -29,8 +29,6 @@ class Project(models.Model):
         editable=False,
     )
     created_at = models.DateTimeField(auto_now_add=True)
-    # Proof run D for issue #30: a field with no migration behind it.
-    tagline = models.CharField(max_length=140, blank=True, default="")
 
     class Meta:
         ordering: ClassVar[list[str]] = ["-created_at", "-id"]
