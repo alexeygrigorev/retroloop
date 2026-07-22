@@ -14,7 +14,13 @@ Commands
 - `uv run manage.py runserver` - dev server
 - `uv run manage.py migrate` - apply migrations
 - `uv run manage.py db_worker` - background worker, without Compose. Add
-  `--batch` to drain the queue once and exit
+  `--batch` to drain the queue once and exit. Under Compose the worker runs
+  with `--no-reload`, so editing a task means `docker compose restart worker`;
+  `compose.yaml` says why
+- `uv run manage.py sweep_media` - collect the recordings a killed worker left
+  behind. It never touches media a live worker holds, and never judges a file a
+  record still names by age. `--min-age 0` removes the only guard on an upload
+  that is still being written, so leave it alone outside a test
 - `uv run pytest` - the whole suite. The tests that read a built asset build it
   first, once per session, so a fresh checkout does not have to remember the npm
   commands below; a build that does not produce its file fails the run, naming
