@@ -1,0 +1,20 @@
+{# Plain and unstyled until task 3 lands a base layout to extend. #}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sign up</title>
+  </head>
+  <body>
+    <h1>Sign up</h1>
+
+    <form method="post">
+      {% csrf_token %}
+      {{ form.as_p }}
+      <button type="submit">Create account</button>
+    </form>
+
+    <p>Already have an account? <a href="{% url 'login' %}">Log in</a>.</p>
+  </body>
+</html>

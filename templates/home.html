@@ -1,4 +1,5 @@
-{# Placeholder homepage. Task 3 replaces this with a base layout. #}
+{# Placeholder homepage. Task 3 replaces this with a base layout, and the nav
+   below moves into its `nav_actions` block. #}
 <!doctype html>
 <html lang="en">
   <head>
@@ -7,6 +8,21 @@
     <title>Weekly Team Feedback</title>
   </head>
   <body>
+    <nav>
+      {% if user.is_authenticated %}
+        {# Falls back to the username when the display name is blank. #}
+        <span>{{ user }}</span>
+        <a href="{% url 'password_change' %}">Change password</a>
+        <form method="post" action="{% url 'logout' %}">
+          {% csrf_token %}
+          <button type="submit">Log out</button>
+        </form>
+      {% else %}
+        <a href="{% url 'login' %}">Log in</a>
+        <a href="{% url 'signup' %}">Sign up</a>
+      {% endif %}
+    </nav>
+
     <h1>Weekly Team Feedback</h1>
     <p>The project skeleton is running.</p>
   </body>

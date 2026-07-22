@@ -61,6 +61,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "accounts",
 ]
 
 MIDDLEWARE = [
@@ -105,6 +106,15 @@ DATABASES = {
 
 # Sessions live in Postgres, so there is no second piece of infrastructure to run.
 SESSION_ENGINE = "django.contrib.sessions.backends.db"
+
+# The project owns its user model, so later tables can carry a foreign key to a
+# user that has a display name. There is no mail backend and no EMAIL_* setting:
+# a forgotten password is reset by an admin with `manage.py changepassword`.
+AUTH_USER_MODEL = "accounts.User"
+
+LOGIN_URL = "/accounts/login/"
+LOGIN_REDIRECT_URL = "/"
+LOGOUT_REDIRECT_URL = "/"
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
