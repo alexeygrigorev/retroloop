@@ -89,11 +89,10 @@
         is the affected fragment — a new card, a cleared textarea and a
         disappearing "nothing yet" line are one change, not three.
       {% endcomment %}
-      {% url 'card-create' section.cycle.pk section.category as create_url %}
       <form
         method="post"
-        action="{{ create_url }}"
-        hx-post="{{ create_url }}"
+        action="{% url 'card-create' section.cycle.pk section.category %}"
+        hx-post="{% url 'card-create' section.cycle.pk section.category %}"
         hx-target="#section-{{ section.category }}"
         hx-swap="outerHTML"
         x-data="{ remaining: {{ section.remaining }} }"
@@ -126,16 +125,16 @@
 
     {% if card.cycle.accepts_cards %}
       {% comment %}
-        `{% url ... as %}`, here and below, because these partials are also
-        rendered on their own by tests/test_template_comments.py — with no card
-        in the context, the plain tag is a NoReverseMatch rather than a link.
+        The plain `{% url %}` tag, here and in every partial below. The `as var`
+        form swallows a NoReverseMatch and renders an empty attribute instead —
+        a renamed route becomes a button that silently does nothing, which is
+        issue #62. The sweeps in tests/ render these partials with the context
+        the views hand them, so the tag has a card to reverse against.
       {% endcomment %}
-      {% url 'card-edit' card.pk as card_edit_url %}
-      {% url 'card-delete' card.pk as card_delete_url %}
       <div class="mt-4 flex items-center gap-2">
         <button
           type="button"
-          hx-get="{{ card_edit_url }}"
+          hx-get="{% url 'card-edit' card.pk %}"
           hx-target="#card-{{ card.pk }}"
           hx-swap="outerHTML"
           class="btn-secondary"
@@ -148,8 +147,8 @@
         {% endcomment %}
         <form
           method="post"
-          action="{{ card_delete_url }}"
-          hx-post="{{ card_delete_url }}"
+          action="{% url 'card-delete' card.pk %}"
+          hx-post="{% url 'card-delete' card.pk %}"
           hx-target="#section-{{ card.category }}"
           hx-swap="outerHTML"
         >
@@ -168,12 +167,10 @@
 {% endcomment %}
 {% partialdef card_edit_form %}
   <li id="card-{{ card.pk }}" data-card-editing="{{ card.pk }}" class="panel">
-    {% url 'card-edit' card.pk as card_edit_url %}
-    {% url 'card-show' card.pk as card_show_url %}
     <form
       method="post"
-      action="{{ card_edit_url }}"
-      hx-post="{{ card_edit_url }}"
+      action="{% url 'card-edit' card.pk %}"
+      hx-post="{% url 'card-edit' card.pk %}"
       hx-target="#card-{{ card.pk }}"
       hx-swap="outerHTML"
       x-data="{ remaining: {{ remaining }} }"
@@ -195,7 +192,7 @@
         <button type="submit" class="btn-primary">Save</button>
         <button
           type="button"
-          hx-get="{{ card_show_url }}"
+          hx-get="{% url 'card-show' card.pk %}"
           hx-target="#card-{{ card.pk }}"
           hx-swap="outerHTML"
           class="btn-secondary mt-2"

@@ -40,9 +40,8 @@
     you write your cards, and once it is closed it is where you read back what
     you wrote. It never shows anyone else's.
   {% endcomment %}
-  {% url 'cycle-cards' cycle.pk as cards_url %}
   <p class="mt-6 text-sm text-slate-600">
-    <a href="{{ cards_url }}" class="link">Your cards for this week</a>
+    <a href="{% url 'cycle-cards' cycle.pk %}" class="link">Your cards for this week</a>
   </p>
 
   {% if retro %}

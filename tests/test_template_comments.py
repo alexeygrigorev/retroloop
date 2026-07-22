@@ -11,49 +11,31 @@ what the defect was invisible to. Every template under `templates/` is rendered
 on its own — not only the pages a view happens to serve — so a leak inside a
 block that some child overrides is still caught, and so is a leak in a template
 partial.
+
+The rendering used to be done with an empty context. It is now done with the
+two scenes in `tests/template_render.py`, and the reason is issue #62: an empty
+context is why the templates reversed their URLs with
+`{% url 'card-show' card.pk as show_url %}`, which swallows a NoReverseMatch and
+renders an empty attribute. The plain tag needs a card to reverse against, so
+one is supplied — in that module, once, for this sweep and the URL sweep both.
+
+The sweep did not shrink in the trade. It still walks `templates/` and still
+renders every template and every `{% partialdef %}`; each is now rendered twice,
+once in a scene where every control is permitted and once in a scene where none
+is, so the `{% else %}` half of the tree is rendered too, which the empty
+context never reached.
 """
 
 import re
-from pathlib import Path
 
 import pytest
-from django.conf import settings
-from django.contrib.auth.models import AnonymousUser
-from django.template.loader import get_template
-from django.test import RequestFactory
 
-BASE_DIR = Path(settings.BASE_DIR)
-TEMPLATES_DIR = BASE_DIR / "templates"
+from tests.template_render import SCENES, TEMPLATES_DIR, render, template_names
 
 #: A `{# ... #}` whose opening and closing braces are on different lines.
 MULTILINE_COMMENT = re.compile(r"{#(?:[^#]|#(?!}))*?\n(?:[^#]|#(?!}))*?#}")
 
-PARTIALDEF = re.compile(r"{%\s*partialdef\s+([\w-]+)")
-
-
-def _template_names() -> list[str]:
-    """Every template in `templates/`, plus every partial defined inside one."""
-    names = []
-    for path in sorted(TEMPLATES_DIR.rglob("*.html")):
-        name = path.relative_to(TEMPLATES_DIR).as_posix()
-        names.append(name)
-        names += [f"{name}#{partial}" for partial in PARTIALDEF.findall(path.read_text())]
-    return names
-
-
-TEMPLATE_NAMES = _template_names()
-
-
-def _render(name: str) -> str:
-    """Render `name` with enough of a request that context processors work.
-
-    Missing context variables are not an error in Django's engine, so a page
-    template renders without its view: the parts that matter here — the literal
-    text between the tags — are the parts that do not depend on context.
-    """
-    request = RequestFactory().get("/")
-    request.user = AnonymousUser()
-    return get_template(name).render({}, request)
+TEMPLATE_NAMES = template_names()
 
 
 def test_the_template_tree_is_actually_discovered() -> None:
@@ -63,18 +45,20 @@ def test_the_template_tree_is_actually_discovered() -> None:
     assert "base.html" in TEMPLATE_NAMES
     assert "home.html" in TEMPLATE_NAMES
     assert "home.html#frontend_check" in TEMPLATE_NAMES
+    assert "cycles/card_list.html#card_edit_form" in TEMPLATE_NAMES
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize("scene_name", SCENES)
 @pytest.mark.parametrize("name", TEMPLATE_NAMES)
-def test_no_template_renders_a_comment_as_text(name: str) -> None:
-    rendered = _render(name)
+def test_no_template_renders_a_comment_as_text(name: str, scene_name: str) -> None:
+    rendered = render(name, scene_name)
 
     assert rendered.strip(), f"{name} rendered nothing, so the check below proves nothing"
     leaked = [line for line in rendered.splitlines() if "{#" in line or "#}" in line]
     assert leaked == [], (
-        f"{name} leaked comment source into its output. A `{{# #}}` comment "
-        f"spanning more than one line is not a comment — use "
+        f"{name} leaked comment source into its output in the {scene_name} scene. "
+        f"A `{{# #}}` comment spanning more than one line is not a comment — use "
         f"`{{% comment %}}`/`{{% endcomment %}}`.\n" + "\n".join(leaked)
     )
 

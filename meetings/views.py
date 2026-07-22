@@ -19,7 +19,6 @@ from django.core.exceptions import PermissionDenied
 from django.db import IntegrityError
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
-from django.urls import reverse
 
 from meetings.forms import MeetingUploadForm
 from meetings.models import MeetingRecord
@@ -156,13 +155,12 @@ def _declared_size(request: HttpRequest) -> int:
 def _status_context(record: MeetingRecord | None) -> dict:
     """Everything the polled fragment renders, computed here rather than in it.
 
-    `status_url` is passed in rather than reversed in the template: the
-    fragment is also rendered on its own, and `{% url %}` inside it would then
-    have no record to reverse against.
+    The address it polls is not among them. It is reversed in the template with
+    the plain `{% url %}` tag, so a renamed route raises there instead of
+    arriving as an empty `hx-get` that stops the polling in silence (#62).
     """
     return {
         "record": record,
-        "status_url": reverse("meeting-record-status", args=[record.pk]) if record else "",
         # Polling stops at READY and at FAILED, because neither moves again.
         "polling": record is not None and not record.is_final,
         "failed": record is not None and record.status == MeetingRecord.Status.FAILED,
