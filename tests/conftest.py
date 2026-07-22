@@ -27,17 +27,3 @@ def built_stylesheet() -> Path:
 def built_island() -> Path:
     """`static/board/manifest.json`, built by `npm run build:js` if this session has not."""
     return ensure_built(ISLAND)
-
-
-def pytest_collection_modifyitems(config, items):
-    # QA PROOF for #72, reverted by the next commit: thin the suite to one
-    # test per module, QA's modifyitems attack. Deselecting after collection
-    # leaves the JUnit report and the count in agreement on the thinned total.
-    seen = set()
-    kept = []
-    for item in items:
-        module = item.nodeid.split("::", 1)[0]
-        if module not in seen:
-            seen.add(module)
-            kept.append(item)
-    items[:] = kept
