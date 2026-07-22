@@ -173,4 +173,17 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024
 DATA_UPLOAD_MAX_MEMORY_SIZE = FILE_UPLOAD_MAX_MEMORY_SIZE
 SCRATCH_DIR = Path(os.environ.get("SCRATCH_DIR", BASE_DIR / "scratch"))
 
+# The one credential the product has, and the only thing it is used for is
+# transcription. An empty value is a valid configuration rather than a startup
+# error: an upload then fails with a message naming this variable, which is
+# something a facilitator can pass on, instead of an authentication error out of
+# the SDK. Never a value here — .env.example carries the placeholder.
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+
+# Which client the transcription pipeline builds, as a dotted path rather than
+# an env var: it is a structural fact like VITE_MANIFEST above, not something a
+# deployment tunes. `config/settings_test.py` points it at `ai.fakes` so the
+# suite runs the whole pipeline with no key and no network.
+TRANSCRIPTION_CLIENT = "ai.transcription.OpenAITranscriptionClient"
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

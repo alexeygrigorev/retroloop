@@ -325,6 +325,18 @@ def test_no_email_setting_is_defined_in_config() -> None:
 
 
 def test_env_example_gains_no_new_variable() -> None:
+    """No mail variable, and every other one is here on purpose.
+
+    Decision 8 is what this guards: `EMAIL_HOST`, `EMAIL_BACKEND` and the rest
+    of that family must never appear, because there is no mail backend and
+    there is not going to be one.
+
+    The set is exact rather than a search for `EMAIL_`, so a variable added for
+    any other reason still has to be written down here in the same commit.
+    `OPENAI_API_KEY` is the one that has been: #21 sends the meeting audio for
+    transcription and AGENTS.md requires the credential to come from the
+    environment with a line in this file.
+    """
     text = (Path(settings.BASE_DIR) / ".env.example").read_text()
     names = {
         line.split("=", 1)[0].strip()
@@ -332,7 +344,14 @@ def test_env_example_gains_no_new_variable() -> None:
         if line.strip() and not line.strip().startswith("#") and "=" in line
     }
 
-    assert names == {"DEBUG", "SECRET_KEY", "ALLOWED_HOSTS", "DATABASE_URL"}
+    assert names == {
+        "DEBUG",
+        "SECRET_KEY",
+        "ALLOWED_HOSTS",
+        "DATABASE_URL",
+        "OPENAI_API_KEY",
+    }
+    assert not any(name.startswith("EMAIL") for name in names)
 
 
 @pytest.mark.django_db

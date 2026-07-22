@@ -61,3 +61,12 @@ TASKS = {
 # are each tested against a real file in tests/test_island.py, which points this
 # setting back at the build output.
 VITE_MANIFEST = BASE_DIR / "tests" / "fixtures" / "vite_manifest.json"
+
+# No test makes a network call, and no test needs a key. The whole pipeline runs
+# against a stand-in client instead — not a mock reached for by one test, the
+# default for the suite, so a test that forgets to inject one still cannot reach
+# the API. The key is blanked as well, so a developer .env that has a real one
+# cannot be spent by a test run; the tests that prove the missing-key failure
+# and the SDK call itself set what they need for themselves.
+TRANSCRIPTION_CLIENT = "ai.fakes.EchoTranscriptionClient"
+OPENAI_API_KEY = ""
