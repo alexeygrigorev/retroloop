@@ -1,29 +1,52 @@
-{# Placeholder homepage. Task 3 replaces this with a base layout, and the nav
-   below moves into its `nav_actions` block. #}
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Weekly Team Feedback</title>
-  </head>
-  <body>
-    <nav>
-      {% if user.is_authenticated %}
-        {# Falls back to the username when the display name is blank. #}
-        <span>{{ user }}</span>
-        <a href="{% url 'password_change' %}">Change password</a>
-        <form method="post" action="{% url 'logout' %}">
-          {% csrf_token %}
-          <button type="submit">Log out</button>
-        </form>
-      {% else %}
-        <a href="{% url 'login' %}">Log in</a>
-        <a href="{% url 'signup' %}">Sign up</a>
-      {% endif %}
-    </nav>
+{% extends "base_app.html" %}
+{# Placeholder homepage. Real screens arrive with their own issues; what this
+   page exists to show is that the layout, Tailwind, htmx and Alpine all work. #}
 
-    <h1>Weekly Team Feedback</h1>
-    <p>The project skeleton is running.</p>
-  </body>
-</html>
+{% block content %}
+  <h1 class="text-2xl font-semibold tracking-tight">Weekly Team Feedback</h1>
+  <p class="mt-2 text-slate-600">The project skeleton is running.</p>
+
+  <section class="mt-8 rounded-lg border border-slate-200 bg-white p-4">
+    <h2 class="text-lg font-medium">Frontend check</h2>
+    <p class="mt-1 text-sm text-slate-600">
+      The button posts with htmx and swaps the panel below in place, without a
+      page reload. The panel it swaps in is an Alpine component, so a counter
+      that responds there shows Alpine also initialises markup that arrived
+      after the page loaded.
+    </p>
+
+    <button
+      type="button"
+      hx-post="{% url 'frontend_check' %}"
+      hx-target="#frontend-check-panel"
+      hx-swap="innerHTML"
+      class="mt-4 rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white
+             hover:bg-brand-700"
+    >
+      Load the fragment
+    </button>
+
+    <div id="frontend-check-panel" class="mt-4">
+      <p class="text-sm text-slate-500">Nothing loaded yet.</p>
+    </div>
+  </section>
+{% endblock %}
+
+{# The htmx fragment. Django 6 template partials keep it in the page it belongs
+   to instead of a file of its own; the view renders "home.html#frontend_check"
+   and the response carries no layout. #}
+{% partialdef frontend_check %}
+  <div
+    x-data="{ clicks: 0 }"
+    class="rounded-md border border-emerald-300 bg-emerald-50 p-3 text-emerald-900"
+  >
+    <p class="text-sm">Fragment served at {{ served_at }}, with no page reload.</p>
+    <button
+      type="button"
+      @click="clicks++"
+      class="mt-2 rounded-md border border-emerald-400 px-2 py-1 text-sm hover:bg-emerald-100"
+    >
+      Alpine counter: <span x-text="clicks">0</span>
+    </button>
+  </div>
+{% endpartialdef %}

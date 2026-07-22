@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{# base.html plus the account controls in the navigation bar. Application pages
+   extend this one, so the display name, the change-password link and the logout
+   form appear on every page instead of only on the homepage. A page that wants
+   the bare shell — nav_actions empty — extends base.html directly. #}
+
+{% block nav_actions %}
+  {% if user.is_authenticated %}
+    {# Falls back to the username when the display name is blank. #}
+    <span class="text-slate-600">{{ user }}</span>
+    <a href="{% url 'password_change' %}" class="text-brand-700 underline hover:text-brand-600">
+      Change password
+    </a>
+    <form method="post" action="{% url 'logout' %}">
+      {% csrf_token %}
+      <button
+        type="submit"
+        class="rounded-md border border-slate-300 px-2 py-1 hover:border-slate-400 hover:bg-slate-100"
+      >
+        Log out
+      </button>
+    </form>
+  {% else %}
+    <a href="{% url 'login' %}" class="text-brand-700 underline hover:text-brand-600">Log in</a>
+    <a href="{% url 'signup' %}" class="text-brand-700 underline hover:text-brand-600">Sign up</a>
+  {% endif %}
+{% endblock %}

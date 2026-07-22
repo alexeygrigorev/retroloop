@@ -1,0 +1,13 @@
+{
+  "name": "project-feedback-assets",
+  "private": true,
+  "description": "Build-time only: the Tailwind CLI that compiles assets/css/app.css into static/css/app.css. The application itself runs without a Node runtime.",
+  "scripts": {
+    "build:css": "tailwindcss --input assets/css/app.css --output static/css/app.css --minify",
+    "watch:css": "tailwindcss --input assets/css/app.css --output static/css/app.css --watch"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.3.3",
+    "tailwindcss": "4.3.3"
+  }
+}

@@ -1,0 +1,15 @@
+/* The one stylesheet source. Tailwind 4 is configured CSS-first: this file is
+   the configuration, and there is no tailwind.config.js anywhere in the repo.
+
+   `npm run build:css` compiles it to static/css/app.css, which is generated and
+   git-ignored. Source detection is explicit rather than automatic so the build
+   never depends on what happens to be lying around the checkout. */
+@import "tailwindcss" source(none);
+
+@source "../../templates";
+
+@theme {
+  --color-brand-50: oklch(0.97 0.02 250);
+  --color-brand-600: oklch(0.53 0.16 250);
+  --color-brand-700: oklch(0.46 0.15 250);
+}

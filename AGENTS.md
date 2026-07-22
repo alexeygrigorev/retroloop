@@ -19,6 +19,10 @@ Commands
 - `uv run pytest tests/test_home.py` - one test file
 - `uv run ruff check . && uv run ruff format --check .` - lint and format check,
   run it before committing
+- `npm install` - the Tailwind CLI, the only thing in `package.json`
+- `npm run build:css` - compile `assets/css/app.css` into `static/css/app.css`
+- `npm run watch:css` - the same build, rebuilding on every change, for
+  development
 
 Rules
 
@@ -29,6 +33,12 @@ Rules
   so production settings stay strict.
 - Dependencies are pinned exactly in `pyproject.toml`. Do not add one without
   asking.
+- Templates extend `templates/base_app.html`, which is `base.html` plus the
+  account controls in the navigation bar.
+- Tailwind is configured CSS-first in `assets/css/app.css`; there is no
+  `tailwind.config.js`. htmx and Alpine are vendored in `static/vendor/` at
+  pinned versions, never loaded from a CDN. Node is a build-time tool only, so
+  the app runs from an image without it.
 - Commit regularly.
 
 Background tasks

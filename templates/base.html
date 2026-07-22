@@ -1,0 +1,62 @@
+{% load static %}<!doctype html>
+{# The page shell every template inherits: title, navigation, flash messages,
+   main content. `nav_actions` is deliberately empty here — it is the seam a
+   template fills to put controls in the navigation bar. base_app.html fills it
+   with the account controls, so no page has to know about them. #}
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Weekly Team Feedback{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'css/app.css' %}">
+    {# Vendored, pinned, served from this project's own static files. Nothing on
+       the page may reach a third-party origin: #27 adds a CSP that forbids it. #}
+    <script src="{% static 'vendor/htmx-2.0.10.min.js' %}" defer></script>
+    <script src="{% static 'vendor/alpine-3.15.12.min.js' %}" defer></script>
+    {% block extra_head %}{% endblock %}
+  </head>
+  {# Every htmx request carries the CSRF token, so hx-post needs no per-form
+     wiring. Django rejects a POST without it with 403. #}
+  <body
+    class="min-h-screen bg-slate-50 text-slate-900 antialiased"
+    hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+  >
+    <header class="border-b border-slate-200 bg-white">
+      <nav
+        class="mx-auto flex max-w-3xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3"
+        aria-label="Main"
+      >
+        <a href="{% url 'home' %}" class="font-semibold text-brand-700 hover:text-brand-600">
+          Weekly Team Feedback
+        </a>
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm sm:ml-auto">
+          {% block nav_actions %}{% endblock %}
+        </div>
+      </nav>
+    </header>
+
+    {% if messages %}
+      <div class="mx-auto max-w-3xl px-4 pt-4">
+        <ul class="flex flex-col gap-2" role="status">
+          {% for message in messages %}
+            <li
+              data-message-level="{{ message.level_tag }}"
+              class="rounded-md border px-3 py-2 text-sm
+                {% if 'error' in message.tags %}
+                  border-red-300 bg-red-50 text-red-900
+                {% elif 'success' in message.tags %}
+                  border-emerald-300 bg-emerald-50 text-emerald-900
+                {% else %}
+                  border-slate-300 bg-white text-slate-700
+                {% endif %}"
+            >{{ message }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+
+    <main class="mx-auto max-w-3xl px-4 py-8">
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

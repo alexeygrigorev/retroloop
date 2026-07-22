@@ -1,25 +1,29 @@
-{# Plain and unstyled until task 3 lands a base layout to extend. #}
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Log in</title>
-  </head>
-  <body>
-    <h1>Log in</h1>
+{% extends "base_app.html" %}
 
-    <form method="post">
-      {% csrf_token %}
-      {{ form.as_p }}
-      <input type="hidden" name="next" value="{{ next }}">
-      <button type="submit">Log in</button>
-    </form>
+{% block title %}Log in{% endblock %}
 
-    <p>No account yet? <a href="{% url 'signup' %}">Sign up</a>.</p>
-    <p>
-      Forgotten your password? There is no self-serve reset — ask an
-      administrator to set a new one.
-    </p>
-  </body>
-</html>
+{% block content %}
+  <h1 class="text-2xl font-semibold tracking-tight">Log in</h1>
+
+  <form method="post" class="mt-6 flex max-w-sm flex-col gap-2">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <input type="hidden" name="next" value="{{ next }}">
+    <button
+      type="submit"
+      class="mt-2 self-start rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white
+             hover:bg-brand-700"
+    >
+      Log in
+    </button>
+  </form>
+
+  <p class="mt-6 text-sm text-slate-600">
+    No account yet?
+    <a href="{% url 'signup' %}" class="text-brand-700 underline hover:text-brand-600">Sign up</a>.
+  </p>
+  <p class="mt-2 text-sm text-slate-600">
+    Forgotten your password? There is no self-serve reset — ask an
+    administrator to set a new one.
+  </p>
+{% endblock %}

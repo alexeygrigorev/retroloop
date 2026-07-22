@@ -14,6 +14,8 @@ retrospectives that follow them.
 ```bash
 uv sync
 cp .env.example .env
+npm install
+npm run build:css
 uv run manage.py migrate
 uv run manage.py runserver
 ```
@@ -23,6 +25,28 @@ Configuration comes entirely from the environment — `DATABASE_URL`,
 `.env`; in production they are set directly and no `.env` file is shipped.
 `SECRET_KEY` has no fallback when `DEBUG` is off: the app refuses to start
 rather than run on a default key.
+
+## Frontend assets
+
+Assets are built on the host, not in a container. Node is a build-time tool
+only: no image in this project ships a Node runtime, and the app serves nothing
+but the files the build leaves behind.
+
+```bash
+npm install          # Tailwind CLI, the only thing in package.json
+npm run build:css    # assets/css/app.css -> static/css/app.css
+npm run watch:css    # the same, rebuilding as you edit templates
+```
+
+`static/css/app.css` is generated and git-ignored, so build it once after
+cloning and after pulling template changes. Tailwind 4 is configured CSS-first
+inside `assets/css/app.css` — there is no `tailwind.config.js`.
+
+htmx and Alpine are committed under `static/vendor/` at pinned versions and
+served from this project's own domain. Nothing on a page reaches a CDN.
+
+Compose bind-mounts the working tree into the container, so a stylesheet built
+on the host is picked up there without a rebuild.
 
 ## Docker Compose
 

@@ -8,3 +8,6 @@ scratch/
 .env
 .pytest_cache/
 .ruff_cache/
+# Build-time only. The stylesheet it produces, static/css/app.css, is copied
+# into the image; the toolchain that built it is not.
+node_modules/
