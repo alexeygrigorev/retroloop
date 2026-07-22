@@ -88,7 +88,9 @@ Two things guard against that:
 - Each worktree's `.venv` carries an untracked `sitecustomize.py` that
   reads that worktree's `.env` and pins `DATABASE_URL` before Django
   starts. Python imports it automatically, so a forgotten prefix costs
-  nothing
+  nothing. It stands down inside a container, where Compose sets
+  `DATABASE_URL` on purpose and the checkout's `.env` names `localhost`,
+  which no container can reach
 
 The setup is not complete until `uv run python -c "import
 config.settings_test as s; print(s.DATABASES['default']['NAME'])"`
