@@ -1,0 +1,8 @@
+{
+  "assets/js/board.jsx": {
+    "file": "assets/board-suitefixture.js",
+    "name": "board",
+    "src": "assets/js/board.jsx",
+    "isEntry": true
+  }
+}

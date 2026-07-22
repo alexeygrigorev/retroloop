@@ -19,9 +19,13 @@ Commands
 - `uv run pytest tests/test_home.py` - one test file
 - `uv run ruff check . && uv run ruff format --check .` - lint and format check,
   run it before committing
-- `npm install` - the Tailwind CLI, the only thing in `package.json`
+- `npm install` - the build-time toolchain: the Tailwind CLI and Vite
 - `npm run build:css` - compile `assets/css/app.css` into `static/css/app.css`
 - `npm run watch:css` - the same build, rebuilding on every change, for
+  development
+- `npm run build:js` - bundle the React island: `assets/js/board.jsx` into
+  `static/board/`, hashed, with a manifest beside it
+- `npm run watch:js` - the same build, rebuilding on every change, for
   development
 
 Rules
@@ -48,6 +52,15 @@ Rules
   `tailwind.config.js`. htmx and Alpine are vendored in `static/vendor/` at
   pinned versions, never loaded from a CDN. Node is a build-time tool only, so
   the app runs from an image without it.
+- The React island: one entry point, `assets/js/board.jsx`, one mount, the
+  `#retro-board` element on the retrospective detail page, and no React
+  anywhere else - every other screen is a Django template with HTMX. Its
+  initial state crosses into it as `{{ ... |json_script }}` and carries the
+  viewer's own data only; nothing a member may not see goes into the page.
+  A template loads the bundle with `{% vite_bundle "assets/js/board.jsx" %}`,
+  which reads the manifest and renders the hashed filename, and raises naming
+  `npm run build:js` when the build is missing. npm dependencies follow the
+  Python rule: pinned exactly, and ask first.
 - Commit regularly.
 
 Background tasks

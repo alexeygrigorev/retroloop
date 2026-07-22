@@ -1,6 +1,18 @@
 {% extends "base_app.html" %}
+{% load vite %}
 
 {% block title %}Retrospective — week of {{ cycle.week_start|date:'j F Y' }}{% endblock %}
+
+{% block extra_head %}
+  {% comment %}
+    The only React island in the application. The tag reads the Vite manifest
+    and renders the hashed filename the build produced, so no template ever
+    names a built file; a missing build raises here rather than loading
+    nothing. A module script defers, so the mount element below exists by the
+    time it runs.
+  {% endcomment %}
+  {% vite_bundle "assets/js/board.jsx" %}
+{% endblock %}
 
 {% block content %}
   <h1 class="page-heading">Retrospective</h1>
@@ -55,6 +67,25 @@
         <dd data-votes-per-member="{{ retro.votes_per_member }}">{{ retro.votes_per_member }}</dd>
       </div>
     </dl>
+  </section>
+
+  <section class="panel mt-8">
+    {% comment %}
+      Where the board goes. The mount element is empty here and filled by the
+      bundle, which is how a person tells the island is alive: view-source
+      shows an empty div, the browser shows the board.
+
+      The bootstrap is rendered with `json_script`, never marked safe and never
+      interpolated into a script body, so a card containing a closing script
+      tag is data rather than markup.
+
+      It carries the retrospective's id, stage and version and this viewer's
+      own cards, and nothing else — see board_bootstrap() in retro/views.py.
+      Every other member's card reaches the board through #11's state endpoint,
+      which decides what each stage may show, and never through this page.
+    {% endcomment %}
+    {{ board_bootstrap|json_script:"retro-bootstrap" }}
+    <div id="retro-board"></div>
   </section>
 
   {% if retro.is_complete %}
