@@ -334,7 +334,11 @@ def test_this_file_needs_no_yaml_parser_and_no_new_dependency() -> None:
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
 
-    assert imported <= set(sys.stdlib_module_names) | {"django"}, imported
+    # django and pytest are already pinned in pyproject.toml; anything else
+    # would be a package this issue said it did not need.
+    already_pinned = {"django", "pytest"}
+
+    assert imported <= set(sys.stdlib_module_names) | already_pinned, imported
 
     # And nothing was added to the project to make the workflow work either.
     pyproject = (BASE_DIR / "pyproject.toml").read_text()
