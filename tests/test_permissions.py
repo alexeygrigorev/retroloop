@@ -45,19 +45,24 @@ from projects.permissions import (
     can_cast_vote,
     can_close_cycle,
     can_confirm_extraction,
+    can_create_cluster,
     can_delete_card,
+    can_delete_cluster,
     can_edit_card,
+    can_merge_cluster,
     can_move_card,
     can_open_cycle,
+    can_rename_cluster,
     can_rotate_join_token,
     can_see_vote_totals,
+    can_split_cluster,
     can_start_retrospective,
     can_upload_recording,
     can_view_card,
     can_view_project,
     can_view_summary,
 )
-from retro.models import STAGE_ORDER, Retrospective
+from retro.models import STAGE_ORDER, Cluster, Retrospective
 
 User = get_user_model()
 
@@ -85,7 +90,7 @@ _SERIAL = itertools.count(1)
 
 
 class World:
-    """One project, one cycle, one card, and optionally a retrospective."""
+    """One project, one cycle, one card, and optionally a retrospective and cluster."""
 
     def __init__(self, *, stage: str | None, status: str) -> None:
         # A serial, so a test may build two worlds — an open cycle and a closed
@@ -131,8 +136,15 @@ class World:
             author=self.lead,
         )
         self.retro = None
+        # A cluster exists exactly when a retrospective does: it hangs off the
+        # retrospective, so a cycle that has not started one has no board to
+        # hold clusters. The rules that take one are given a world with a stage.
+        self.cluster = None
         if stage is not None:
             self.retro = Retrospective.objects.create(cycle=self.cycle, stage=stage)
+            self.cluster = Cluster.objects.create(
+                retrospective=self.retro, name="Deploys", position=1
+            )
 
         self.refresh()
 
@@ -145,6 +157,10 @@ class World:
             self.retro = Retrospective.objects.select_related("cycle__project").get(
                 pk=self.retro.pk
             )
+        if self.cluster is not None:
+            self.cluster = Cluster.objects.select_related("retrospective__cycle__project").get(
+                pk=self.cluster.pk
+            )
 
     def obj(self, kind: str):
         return {
@@ -152,6 +168,7 @@ class World:
             "cycle": self.cycle,
             "card": self.card,
             "retro": self.retro,
+            "cluster": self.cluster,
         }[kind]
 
 
@@ -212,6 +229,21 @@ RULES: dict[str, Rule] = {
     ),
     "can_move_card": Rule(
         can_move_card, "card", stage=Stage.REVEAL, status=Status.CLOSED, member=True
+    ),
+    "can_create_cluster": Rule(
+        can_create_cluster, "retro", stage=Stage.REVEAL, status=Status.CLOSED, member=True
+    ),
+    "can_rename_cluster": Rule(
+        can_rename_cluster, "cluster", stage=Stage.REVEAL, status=Status.CLOSED, member=True
+    ),
+    "can_merge_cluster": Rule(
+        can_merge_cluster, "cluster", stage=Stage.REVEAL, status=Status.CLOSED, member=True
+    ),
+    "can_split_cluster": Rule(
+        can_split_cluster, "cluster", stage=Stage.REVEAL, status=Status.CLOSED, member=True
+    ),
+    "can_delete_cluster": Rule(
+        can_delete_cluster, "cluster", stage=Stage.REVEAL, status=Status.CLOSED, member=True
     ),
     "can_advance_stage": Rule(
         can_advance_stage, "retro", stage=Stage.DRAFT, status=Status.COLLECTING, member=False
@@ -575,6 +607,75 @@ def test_a_card_with_no_retrospective_cannot_be_moved() -> None:
 
     assert can_move_card(world.lead, world.card) is False
     assert can_move_card(world.member, world.card) is False
+
+
+# --------------------------------------------------------------------------
+# Clusters
+# --------------------------------------------------------------------------
+
+#: The five rules #12 added, all of them the same window as `can_move_card`.
+#: The four that take a cluster are walked together; creating takes the
+#: retrospective, because there is no cluster to ask about yet.
+CLUSTER_RULES = (can_rename_cluster, can_merge_cluster, can_split_cluster, can_delete_cluster)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("stage", STAGE_ORDER)
+def test_changing_a_cluster_is_open_in_reveal_and_cluster_and_frozen_after(stage: str) -> None:
+    """The board's shape is the team's, until the `-> VOTE` transition freezes it.
+
+    The same window as `can_move_card`, asserted rule by rule rather than
+    inferred from the fact that they share a helper: a cluster that could still
+    be merged after the votes were cast would move the votes with it.
+    """
+    world = build(stage=stage, status=Status.CLOSED)
+    changeable = stage in {Stage.REVEAL, Stage.CLUSTER}
+
+    for rule in CLUSTER_RULES:
+        assert rule(world.lead, world.cluster) is changeable, rule.__name__
+        assert rule(world.member, world.cluster) is changeable, rule.__name__
+        assert rule(world.outsider, world.cluster) is False, rule.__name__
+        assert rule(world.superuser, world.cluster) is False, rule.__name__
+        assert rule(world.anonymous, world.cluster) is False, rule.__name__
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("stage", STAGE_ORDER)
+def test_creating_a_cluster_is_open_in_the_same_two_stages(stage: str) -> None:
+    world = build(stage=stage, status=Status.CLOSED)
+    changeable = stage in {Stage.REVEAL, Stage.CLUSTER}
+
+    assert can_create_cluster(world.lead, world.retro) is changeable
+    assert can_create_cluster(world.member, world.retro) is changeable
+    assert can_create_cluster(world.outsider, world.retro) is False
+    assert can_create_cluster(world.superuser, world.retro) is False
+    assert can_create_cluster(world.anonymous, world.retro) is False
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("stage", [Stage.REVEAL, Stage.CLUSTER])
+def test_a_suggested_cluster_is_governed_by_exactly_the_same_rules(stage: str) -> None:
+    """#22's rows are not privileged and not protected — the flag is wording only."""
+    world = build(stage=stage, status=Status.CLOSED)
+    Cluster.objects.filter(pk=world.cluster.pk).update(is_auto_generated=True)
+    world.refresh()
+
+    assert world.cluster.is_auto_generated is True
+    for rule in CLUSTER_RULES:
+        assert rule(world.member, world.cluster) is True, rule.__name__
+        assert rule(world.outsider, world.cluster) is False, rule.__name__
+
+
+@pytest.mark.django_db
+def test_a_cluster_rule_reaches_its_project_through_its_retrospective() -> None:
+    """A cluster on another team's board is nobody's here, at any stage."""
+    ours = build(stage=Stage.CLUSTER, status=Status.CLOSED)
+    theirs = build(stage=Stage.CLUSTER, status=Status.CLOSED)
+
+    for rule in CLUSTER_RULES:
+        assert rule(ours.member, ours.cluster) is True, rule.__name__
+        assert rule(ours.member, theirs.cluster) is False, rule.__name__
+        assert rule(theirs.member, ours.cluster) is False, rule.__name__
 
 
 # --------------------------------------------------------------------------

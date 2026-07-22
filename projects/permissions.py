@@ -22,13 +22,14 @@ here; a second `permissions.py` anywhere is the thing this file exists to
 prevent.
 
 Not here yet, deliberately: `can_update_action_item` waits for `ActionItem`
-(#17), and the rules guarding `Cluster` and `Note` wait for those models (#12,
-#16). Each of those issues adds its predicate to this file.
+(#17), and the rules guarding `Note` wait for that model (#16). Each of those
+issues adds its predicate to this file. The `Cluster` rules arrived with #12 and
+are below, beside `can_move_card`.
 """
 
 from cycles.models import Card, FeedbackCycle
 from projects.models import Membership, Project
-from retro.models import STAGE_ORDER, Retrospective
+from retro.models import STAGE_ORDER, Cluster, Retrospective
 
 # --------------------------------------------------------------------------
 # Helpers. Not rules, so they are private and the public surface of this
@@ -90,6 +91,34 @@ def _stage_past(retro: Retrospective | None, stage: str) -> bool:
     if retro is None:
         return False
     return STAGE_ORDER.index(retro.stage) > STAGE_ORDER.index(stage)
+
+
+#: The two stages in which the board's shape may be changed at all. The
+#: `-> VOTE` transition freezes cluster membership, so the window closes there
+#: and never reopens: a board that has been voted on is not reshaped underneath
+#: the votes.
+_BOARD_SHAPING_STAGES = frozenset({Retrospective.Stage.REVEAL, Retrospective.Stage.CLUSTER})
+
+
+def _may_shape_board(user, retro: Retrospective | None, project: Project) -> bool:
+    """The one window every board mutation shares: a member, in REVEAL or CLUSTER.
+
+    Written once because `can_move_card` and the five cluster rules are the same
+    sentence about the same board. A cycle with no retrospective has no board to
+    reshape, so it is False rather than an attribute error.
+    """
+    return (
+        _is_active_user(user)
+        and retro is not None
+        and retro.stage in _BOARD_SHAPING_STAGES
+        and _is_member(user, project)
+    )
+
+
+def _shaping_a_cluster(user, cluster: Cluster) -> bool:
+    """`_may_shape_board` for a rule that is handed a cluster."""
+    retro = cluster.retrospective
+    return _may_shape_board(user, retro, retro.cycle.project)
 
 
 # --------------------------------------------------------------------------
@@ -186,13 +215,64 @@ def can_move_card(user, card: Card) -> bool:
     Frozen from VOTE onward, because the move into VOTE freezes cluster
     membership — #12 enforces this and says the same two stages.
     """
-    retro = _retrospective_of(card.cycle)
-    return (
-        _is_active_user(user)
-        and retro is not None
-        and retro.stage in {Retrospective.Stage.REVEAL, Retrospective.Stage.CLUSTER}
-        and _is_member(user, card.cycle.project)
-    )
+    return _may_shape_board(user, _retrospective_of(card.cycle), card.cycle.project)
+
+
+# --------------------------------------------------------------------------
+# Clusters
+#
+# The board's shape — which cards are grouped, and into what — is one rule with
+# five more names, all of them the same window as `can_move_card`: a project
+# member, while the stage is REVEAL or CLUSTER. They are written out one per
+# action rather than collapsed into a single `can_change_cluster`, because a
+# call site that asks the question it means is what makes a later divergence —
+# #16 letting only the facilitator delete a discussed cluster, say — a change to
+# one predicate instead of a new one and a search for its call sites.
+# --------------------------------------------------------------------------
+
+
+def can_create_cluster(user, retro: Retrospective) -> bool:
+    """Project members, while the board is in REVEAL or CLUSTER.
+
+    Handed the retrospective rather than a cluster: there is no cluster to ask
+    about yet. Creating one on a board that is frozen is refused for the same
+    reason moving a card into one is.
+    """
+    return _may_shape_board(user, retro, retro.cycle.project)
+
+
+def can_rename_cluster(user, cluster: Cluster) -> bool:
+    """Project members, while the board is in REVEAL or CLUSTER.
+
+    `is_auto_generated` is not consulted here or in any rule below. A cluster
+    #22 suggested is renamed, merged, split and deleted exactly like a hand-made
+    one; the flag changes the wording a screen uses and nothing else.
+    """
+    return _shaping_a_cluster(user, cluster)
+
+
+def can_merge_cluster(user, cluster: Cluster) -> bool:
+    """Project members, while the board is in REVEAL or CLUSTER.
+
+    Asked of both clusters a merge names — the source that disappears and the
+    target that grows — so neither side is authorized by the other's stage.
+    """
+    return _shaping_a_cluster(user, cluster)
+
+
+def can_split_cluster(user, cluster: Cluster) -> bool:
+    """Project members, while the board is in REVEAL or CLUSTER."""
+    return _shaping_a_cluster(user, cluster)
+
+
+def can_delete_cluster(user, cluster: Cluster) -> bool:
+    """Project members, while the board is in REVEAL or CLUSTER.
+
+    Deleting a cluster is a change to the board's shape and nothing more: its
+    cards return to ungrouped and no card is deleted, so this is the same
+    window as moving one card out by hand, which is what it amounts to.
+    """
+    return _shaping_a_cluster(user, cluster)
 
 
 # --------------------------------------------------------------------------
