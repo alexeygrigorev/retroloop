@@ -24,6 +24,7 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
 from django.conf import settings
 
 BASE_DIR = Path(settings.BASE_DIR)
@@ -176,6 +177,7 @@ def test_python_dependencies_install_from_the_lock_file() -> None:
     assert re.search(r"uv sync(?! --locked)", text) is None, "bare `uv sync` in the workflow"
 
 
+@pytest.mark.skip(reason="proof run C for issue #30: a skipped test has to fail CI")
 def test_uv_run_never_re_resolves() -> None:
     assert 'UV_FROZEN: "1"' in commands()
 
