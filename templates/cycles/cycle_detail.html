@@ -45,6 +45,31 @@
     <a href="{{ cards_url }}" class="link">Your cards for this week</a>
   </p>
 
+  {% if retro %}
+    <p class="mt-6 text-sm text-slate-600">
+      <a href="{{ retro.get_absolute_url }}" class="text-brand-700 underline hover:text-brand-600">
+        The retrospective for this week
+      </a>
+      — {{ retro.get_stage_display }}
+    </p>
+  {% elif can_start_retro %}
+    {% comment %}
+      Shown only to this cycle's facilitator, and only while the cycle has no
+      retrospective yet. The button is a courtesy: start_retrospective asks
+      can_start_retrospective again and refuses everyone else, including a
+      second attempt on a cycle that already has one.
+    {% endcomment %}
+    <form method="post" action="{% url 'retro-start' cycle.pk %}" class="mt-6">
+      {% csrf_token %}
+      <button
+        type="submit"
+        class="rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700"
+      >
+        Start the retrospective
+      </button>
+    </form>
+  {% endif %}
+
   {% if can_close %}
     {% comment %}
       Shown only to this cycle's facilitator, and only while it is collecting.
