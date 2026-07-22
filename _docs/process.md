@@ -66,7 +66,8 @@ touches it:
 - `uv sync` - the worktree has its own `.venv`
 - `.env` copied from the main checkout, with `DATABASE_URL` pointed at a
   database of its own, `feedback_wt<issue>`
-- `createdb feedback_wt<issue>` inside the Postgres container
+- `CREATE DATABASE feedback_wt<issue>` inside the Postgres container. If
+  the name is already taken, pick a fresh one rather than dropping it
 
 The database part is not optional. `.env` is git-ignored and
 `config/settings_test.py` reads it, so each worktree gets both its own
@@ -100,11 +101,36 @@ after it reports a mysterious failure.
 Postgres itself stays a single container. Databases inside it are cheap;
 a second container is not.
 
-When an issue is merged and closed, remove its worktree and drop its
-database:
+A merged worktree is left where it is. Reuse it for the next issue that
+lands in the same area, or leave it alone. A stale checkout and an idle
+database cost nothing next to a stalled run - see below for why nobody
+deletes them mid-session.
 
-    git worktree remove ../wt/<issue>
-    git branch -d issue-<issue>
+
+Destructive commands stall the run
+
+The harness checks commands that destroy things and asks the person
+running the session to approve them. That is the right behaviour, but it
+means the work stops dead until someone is at the keyboard. A wave of
+five agents can sit idle overnight on one `rm`.
+
+So nothing in this process deletes. Not worktrees, not branches, not
+databases, not temporary files.
+
+- Restore a file you changed on purpose with `git checkout -- <path>` or
+  `git restore <path>`, never by copying it aside and deleting the copy
+- Write temporary files to the session scratchpad, which is outside the
+  repository and needs no cleanup, never to `/tmp` and never next to the
+  code
+- Leave worktrees, branches and `feedback_wt<issue>` databases in place
+  when an issue closes. They are a few megabytes and a row in
+  `pg_database`
+- Recreate a database with `CREATE DATABASE` on a fresh name rather than
+  dropping and remaking the old one
+
+If something genuinely has to be removed, that is the user's call. Say
+what should go and why, and let them run it. Do not put a deletion in
+front of an agent and hope it goes through.
 
 
 Integration
@@ -144,7 +170,7 @@ Lifecycle
    input. The rest of the wave carries on
 6. On PASS, integrate that branch through the merge queue and close the
    issue
-7. Tear down the worktree and its database
+7. Leave the worktree and its database in place
 8. Repeat until the backlog is empty
 
 Rules

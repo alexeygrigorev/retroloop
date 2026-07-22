@@ -24,6 +24,11 @@ tells you where it is.
   against what the issue tells you to assume, not against their branch
 - If your branch conflicts with main, say so on the issue and stop. The
   orchestrator rebases, not you
+- Delete nothing. A command that destroys something stops the run until
+  a person approves it, and nobody may be watching. Undo an edit with
+  `git checkout -- <path>`, put scratch files in the session scratchpad
+  outside the repository, and leave databases and branches alone. If
+  something has to go, say so in your report and let the user do it
 
 Definition of done:
 

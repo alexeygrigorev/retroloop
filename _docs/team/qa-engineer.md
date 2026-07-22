@@ -20,6 +20,12 @@ issues being built at the same time.
   in the wave, and missing work that belongs to another issue is not a
   FAIL
 - Change nothing, on any branch
+- Delete nothing either. A command that destroys something stops the run
+  until a person approves it, and nobody may be watching. When you break
+  something on purpose to prove a test catches it, put the file back with
+  `git checkout -- <path>`, not by copying it aside and deleting the
+  copy. Scratch files go in the session scratchpad, outside the
+  repository. Leave containers, volumes and databases where they are
 
 How you check, on this project:
 
