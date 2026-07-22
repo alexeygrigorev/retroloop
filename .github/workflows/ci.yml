@@ -244,7 +244,11 @@ jobs:
       - name: Run the test suite
         # -rs so the log names every skip and its reason, and a JUnit report for
         # the gate below.
-        run: uv run pytest -rs --junitxml="$JUNIT_REPORT"
+        # PROOF FOR #72, reverted by the next commit: the run loses the media
+        # pipeline at run time rather than at collection time, so the suite's own
+        # count check (which collects in a subprocess of its own) still sees
+        # 1387 and passes, and the gate below is the only thing that can notice.
+        run: uv run pytest -rs --junitxml="$JUNIT_REPORT" --deselect tests/test_audio.py
 
       - name: Fail if the number of tests that ran is not the expected count
         # The skip gate below reads <skipped> elements, and a test that is never
