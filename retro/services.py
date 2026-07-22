@@ -118,7 +118,13 @@ def _on_reveal(retro: Retrospective) -> None:
 
 
 def _on_cluster(retro: Retrospective) -> None:
-    """Entering CLUSTER. Nothing to do: clustering is driven from the board, #12."""
+    """Entering CLUSTER.
+
+    #9 names no side effect for this transition — the clustering job is
+    enqueued on the way into REVEAL (#22) and the board does the rest (#12).
+    The hook exists anyway, so that every arriving stage has one and a later
+    issue has somewhere obvious to put its work.
+    """
 
 
 def _on_vote(retro: Retrospective) -> None:
