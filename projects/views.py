@@ -80,6 +80,11 @@ def project_create(request: HttpRequest) -> HttpResponse:
 
 @login_required
 def project_detail(request: HttpRequest, pk: int) -> HttpResponse:
+    # Imported inside the view, not at module level: cycles.views imports the
+    # predicates above, and #6 removes both directions by moving every rule into
+    # projects/permissions.py.
+    from cycles.views import can_open_cycle
+
     project = get_object_or_404(Project, pk=pk)
     member_or_404(request.user, project)
 
@@ -92,6 +97,9 @@ def project_detail(request: HttpRequest, pk: int) -> HttpResponse:
             "memberships": memberships,
             "join_url": request.build_absolute_uri(project.join_path()),
             "can_rotate": can_rotate_join_token(request.user, project),
+            # Most recent week first; the model's ordering says so.
+            "cycles": project.cycles.select_related("facilitator"),
+            "can_open_cycle": can_open_cycle(request.user, project),
         },
     )
 

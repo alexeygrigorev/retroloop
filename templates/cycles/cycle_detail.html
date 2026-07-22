@@ -1,0 +1,56 @@
+{% extends "base_app.html" %}
+
+{% block title %}Week of {{ cycle.week_start|date:'j F Y' }}{% endblock %}
+
+{% block content %}
+  <h1 class="text-2xl font-semibold tracking-tight">Week of {{ cycle.week_start|date:'j F Y' }}</h1>
+  <p class="mt-2 text-sm text-slate-600">
+    <a href="{{ project.get_absolute_url }}" class="text-brand-700 underline hover:text-brand-600">
+      {{ project.name }}
+    </a>
+  </p>
+
+  <dl class="mt-6 grid max-w-md grid-cols-[10rem_1fr] gap-y-2 text-sm" data-cycle-status="{{ cycle.status }}">
+    <dt class="font-medium text-slate-700">Status</dt>
+    <dd>{{ cycle.get_status_display }}</dd>
+
+    <dt class="font-medium text-slate-700">Facilitator</dt>
+    <dd>{{ cycle.facilitator }}</dd>
+
+    <dt class="font-medium text-slate-700">Opens</dt>
+    <dd>{{ cycle.opens_at }}</dd>
+
+    <dt class="font-medium text-slate-700">Deadline</dt>
+    <dd>{{ cycle.closes_at }}</dd>
+  </dl>
+
+  {% if cycle.is_collecting %}
+    <p class="mt-6 text-sm text-slate-600">
+      The deadline above is what the team is told. It does not end the cycle by
+      itself — the facilitator does, once everyone has had long enough. Anyone
+      who has not submitted is not a reason to wait.
+    </p>
+  {% else %}
+    <p class="mt-6 text-sm text-slate-600">
+      This cycle is closed. Nothing can be added to it, changed in it or removed
+      from it, and it cannot be opened again.
+    </p>
+  {% endif %}
+
+  {% if can_close %}
+    {% comment %}
+      Shown only to this cycle's facilitator, and only while it is collecting.
+      The button is a courtesy: cycle_close asks can_close_cycle again and
+      refuses everyone else, including a second attempt on a closed cycle.
+    {% endcomment %}
+    <form method="post" action="{% url 'cycle-close' cycle.pk %}" class="mt-6">
+      {% csrf_token %}
+      <button
+        type="submit"
+        class="rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700"
+      >
+        Close the cycle
+      </button>
+    </form>
+  {% endif %}
+{% endblock %}
