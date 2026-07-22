@@ -48,9 +48,43 @@ services:
     build: .
     # Drains the Postgres-backed task queue. Jobs are claimed with SELECT FOR
     # UPDATE SKIP LOCKED, so `docker compose up --scale worker=2` runs each
-    # queued task exactly once. Reloading on code changes is on because DEBUG
-    # is, the same as web's runserver.
-    command: uv run manage.py db_worker
+    # queued task exactly once.
+    #
+    # `--no-reload` and `restart` below are one decision, not two (#55). The
+    # worker does NOT reload on code changes, and web still does; that is the
+    # trade, and here is what was bought with it.
+    #
+    # `db_worker` defaults `--reload` to DEBUG, which is true here. Django's
+    # autoreloader runs the worker in a daemon thread and watches files from
+    # the main thread. When the worker thread dies the reloader does not
+    # notice: it keeps ticking, the process stays alive, `docker compose ps`
+    # keeps saying `Up`, and nothing drains the queue. QA hit exactly this on
+    # #18 by starting a worker against a database that did not yet have the
+    # queue migrations - and it never came back once the migrations landed,
+    # because nothing was left running to come back. A queue that has silently
+    # stopped being served, on a stack that reads healthy, is the worst
+    # failure mode this service has.
+    #
+    # Without the reloader the traceback reaches the top of a single process,
+    # the container exits non-zero, and the status becomes `Restarting` or
+    # `Exited` instead of `Up`. `restart: on-failure` then brings the worker
+    # back the moment the cause is fixed, with no manual `docker compose up` -
+    # a crash loop that heals itself once the database, the code or the
+    # network it was failing on is right again. `on-failure` and not
+    # `unless-stopped`: an exit code of 0 is a worker that was asked to stop
+    # (SIGTERM from `docker compose stop`, or `--batch` draining the queue and
+    # finishing), and that must stay stopped.
+    #
+    # A healthcheck was the alternative and was rejected twice over. The queue
+    # tables carry no worker heartbeat, so a probe would have to invent one in
+    # application code; and Compose does not restart an unhealthy container -
+    # only Swarm does - so it would report the fault without ever fixing it,
+    # which fails the second half of #55.
+    #
+    # The cost: after editing a task, `docker compose restart worker`. That is
+    # one command, in exchange for a worker that cannot lie about being alive.
+    command: uv run manage.py db_worker --no-reload
+    restart: on-failure
     environment:
       DEBUG: "true"
       SECRET_KEY: django-insecure-development-only-key
