@@ -21,6 +21,7 @@ cross-member tests assert on `response.context`, which is what the view handed
 the template, and not only on the HTML the template happened to render.
 """
 
+import ast
 import re
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -1151,7 +1152,26 @@ def test_accepts_cards_is_read_by_no_application_code() -> None:
     ]
 
     assert readers == ["cycles/models.py"]
-    assert cycles_models_source().count("accepts_cards") == 1
+    # And in that one file it is only defined. Asked of the syntax tree rather
+    # than of the text: what must not come back is an expression that reads the
+    # attribute off something, and a count of the name would fail on a comment
+    # explaining why nothing reads it — policing the prose instead of the code,
+    # while still missing `self.accepts_cards` inside a method, which this does
+    # not.
+    tree = ast.parse(cycles_models_source())
+    reads = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr == "accepts_cards"
+    ]
+    definitions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "accepts_cards"
+    ]
+
+    assert reads == []
+    assert len(definitions) == 1
 
 
 def cycles_models_source() -> str:
