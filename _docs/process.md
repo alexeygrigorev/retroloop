@@ -126,6 +126,13 @@ databases, not temporary files.
 
 - Restore a file you changed on purpose with `git checkout -- <path>` or
   `git restore <path>`, never by copying it aside and deleting the copy
+- Beware the version of that command with a commit in it.
+  `git checkout <commit> -- <path>` *stages* what it writes, so the later
+  `git checkout -- <path>` meant to undo it finds nothing to do and
+  silently leaves the old file in place. Someone proved a fix worked by
+  checking out the pre-fix file, and nearly shipped the branch with it.
+  After restoring anything, `git status` and `git diff HEAD` both have to
+  be empty before the work is called done
 - Write temporary files to the session scratchpad, which is outside the
   repository and needs no cleanup, never to `/tmp` and never next to the
   code
