@@ -69,6 +69,16 @@ def reveal_cycle(cycle: FeedbackCycle) -> None:
             "so participation, the shuffle and the destroyed authors commit together."
         )
 
+    # Lock the cycle row before reading its cards. `card_create` takes the same
+    # lock before it decides whether the cycle still accepts cards, so a card
+    # being written at this instant either lands before the three steps below
+    # see it — counted, positioned and anonymised with the rest — or waits and
+    # is refused. Without the lock it would commit into a revealed cycle
+    # afterwards, keeping its author for good with nothing left to null it.
+    # Held here rather than relied on from the caller's status UPDATE, which
+    # does not happen at all when the facilitator closed the cycle by hand.
+    FeedbackCycle.objects.select_for_update().get(pk=cycle.pk)
+
     _record_participation(cycle)
     _shuffle_positions(cycle)
     _destroy_anonymous_authorship(cycle)
