@@ -18,6 +18,8 @@ real build happens to work.
 import os
 import re
 import subprocess
+import tempfile
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -55,6 +57,32 @@ def from_an_earlier_build(path: Path, content: str = EARLIER_BUILD) -> None:
     """Leave `path` looking exactly like output of a build that ran long ago."""
     path.write_text(content)
     os.utime(path, ns=(EARLIER, EARLIER))
+
+
+def record(order: list[str], name: str, original: Callable[..., object]) -> Callable[..., object]:
+    """Wrap `original` so the order it is called in can be asserted on."""
+
+    def wrapper(*args: object, **kwargs: object) -> object:
+        order.append(name)
+        return original(*args, **kwargs)
+
+    return wrapper
+
+
+@pytest.fixture
+def kept_directories(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Every temp directory `set_aside` makes during a test, so it can be looked for."""
+    made: list[Path] = []
+    set_aside = assets.set_aside
+
+    def spy(path: Path) -> assets.SetAside | None:
+        kept = set_aside(path)
+        if kept is not None:
+            made.append(kept.directory)
+        return kept
+
+    monkeypatch.setattr(assets, "set_aside", spy)
+    return made
 
 
 @pytest.fixture
@@ -257,6 +285,129 @@ def test_a_rebuild_that_writes_byte_identical_output_is_not_red(
 
     assert ensure_built(missing) == missing.path
     assert missing.path.read_text() == EARLIER_BUILD
+
+
+# --------------------------------------------------------------------------
+# The window where the artefact is out of the checkout
+# --------------------------------------------------------------------------
+
+
+def test_an_interrupted_build_puts_the_artefact_back(
+    missing: Artefact, monkeypatch: pytest.MonkeyPatch, kept_directories: list[Path]
+) -> None:
+    """Ctrl-C during a build must not cost a developer their build output.
+
+    `KeyboardInterrupt` is not an `Exception`, so nothing short of a `finally`
+    catches this one.
+    """
+    from_an_earlier_build(missing.path)
+
+    def interrupted(artefact: Artefact, npm: str) -> subprocess.CompletedProcess[str]:
+        assert not artefact.path.exists(), "the build should run over an empty path"
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(assets, "npm_executable", lambda: "/usr/bin/npm")
+    monkeypatch.setattr(assets, "run_build", interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        ensure_built(missing)
+
+    assert missing.path.read_text() == EARLIER_BUILD
+    assert kept_directories and not kept_directories[0].exists()
+
+
+def test_a_build_that_runs_past_its_timeout_puts_the_artefact_back(
+    missing: Artefact, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from_an_earlier_build(missing.path)
+
+    def timed_out(artefact: Artefact, npm: str) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd="npm run build:css", timeout=assets.BUILD_TIMEOUT)
+
+    monkeypatch.setattr(assets, "npm_executable", lambda: "/usr/bin/npm")
+    monkeypatch.setattr(assets, "run_build", timed_out)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        ensure_built(missing)
+
+    assert missing.path.read_text() == EARLIER_BUILD
+
+
+def test_the_artefact_is_back_before_the_temp_directory_goes(
+    missing: Artefact, monkeypatch: pytest.MonkeyPatch, kept_directories: list[Path]
+) -> None:
+    """Cleanup after restore, never instead of it: the order is what makes it safe."""
+    from_an_earlier_build(missing.path)
+    order = []
+
+    monkeypatch.setattr(assets, "npm_executable", lambda: "/usr/bin/npm")
+    monkeypatch.setattr(assets, "run_build", lambda artefact, npm: completed(0))
+    monkeypatch.setattr(assets, "restore", record(order, "restore", assets.restore))
+    monkeypatch.setattr(assets, "discard", record(order, "discard", assets.discard))
+
+    with pytest.raises(pytest.fail.Exception):
+        ensure_built(missing)
+
+    assert order == ["restore", "discard"]
+    assert missing.path.read_text() == EARLIER_BUILD
+    assert not kept_directories[0].exists()
+
+
+# --------------------------------------------------------------------------
+# The temp directory does not outlive the build
+# --------------------------------------------------------------------------
+
+
+def test_a_finished_build_leaves_no_temp_directory_behind(
+    missing: Artefact, monkeypatch: pytest.MonkeyPatch, kept_directories: list[Path]
+) -> None:
+    from_an_earlier_build(missing.path)
+
+    def build(artefact: Artefact, npm: str) -> subprocess.CompletedProcess[str]:
+        artefact.path.write_text("/* built now */")
+        return completed(0)
+
+    monkeypatch.setattr(assets, "npm_executable", lambda: "/usr/bin/npm")
+    monkeypatch.setattr(assets, "run_build", build)
+
+    ensure_built(missing)
+
+    assert kept_directories and not kept_directories[0].exists()
+    assert missing.path.read_text() == "/* built now */"
+
+
+def test_cleanup_removes_only_a_directory_this_module_made(tmp_path: Path) -> None:
+    """Scoped by what `set_aside` recorded, and by where and how it makes it."""
+    someone_elses = tmp_path / "not-ours"
+    someone_elses.mkdir()
+    (someone_elses / "precious.txt").write_text("not the fixture's to remove")
+
+    assets.discard(assets.SetAside(directory=someone_elses, path=someone_elses / "app.css"))
+
+    assert (someone_elses / "precious.txt").is_file()
+
+
+def test_cleanup_of_nothing_set_aside_does_nothing() -> None:
+    assert assets.discard(None) is None
+
+
+def test_what_set_aside_makes_is_what_cleanup_accepts(tmp_path: Path) -> None:
+    """The two ends of the scoping rule, checked against each other."""
+    artefact = tmp_path / "app.css"
+    artefact.write_text("/* built */")
+
+    kept = assets.set_aside(artefact)
+
+    assert kept is not None
+    assert not artefact.exists(), "the build has to run over an empty path"
+    assert kept.directory.name.startswith(assets.KEPT_PREFIX)
+    assert kept.directory.parent == Path(tempfile.gettempdir())
+
+    assets.restore(kept, artefact)
+    assets.discard(kept)
+
+    assert artefact.read_text() == "/* built */"
+    assert not kept.directory.exists()
 
 
 # --------------------------------------------------------------------------

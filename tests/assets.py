@@ -170,27 +170,64 @@ def run_build(artefact: Artefact, npm: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def set_aside(path: Path) -> Path | None:
+KEPT_PREFIX = "built-asset-"
+
+
+@dataclass(frozen=True)
+class SetAside:
+    """A file moved out of the checkout for the duration of one build."""
+
+    directory: Path
+    path: Path
+
+
+def set_aside(path: Path) -> SetAside | None:
     """Move `path` out of the way so the build has to write it, or None if absent.
 
     Moved rather than copied, and moved out of the tree rather than next to the
     file: `vite build` empties `static/board/` before it writes, so anything kept
-    in there would be gone by the time it was needed. Nothing is deleted - what
-    is moved is either put back by `restore` or replaced by the build that was
-    asked for, and the copy stays in the temp directory either way.
+    in there would be gone by the time it was needed. What is moved is either put
+    back by `restore` or replaced by the build that was asked for, and `discard`
+    takes the temp directory away afterwards - the caller does all three in a
+    `try`/`finally`, so an interrupted run gets its file back too.
     """
     if not path.exists():
         return None
-    kept = Path(tempfile.mkdtemp(prefix="built-asset-")) / path.name
-    shutil.move(path, kept)
-    return kept
+    directory = Path(tempfile.mkdtemp(prefix=KEPT_PREFIX))
+    shutil.move(path, directory / path.name)
+    return SetAside(directory=directory, path=directory / path.name)
 
 
-def restore(kept: Path | None, path: Path) -> None:
+def restore(kept: SetAside | None, path: Path) -> None:
     """Put back what `set_aside` moved, when the build did not replace it."""
-    if kept is not None and not path.exists():
+    if kept is not None and kept.path.exists() and not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(kept, path)
+        shutil.move(kept.path, path)
+
+
+def discard(kept: SetAside | None) -> None:
+    """Remove the temp directory `set_aside` made, and nothing else.
+
+    Always after `restore`, never instead of it: by the time this runs, whatever
+    was moved is either back in the checkout or superseded by the build's own
+    output, so what is left here is a spare copy of a file one npm command
+    reproduces.
+
+    Two things have to be true of a directory before it is removed, and both are
+    about this module having made it: it is the path `set_aside` recorded rather
+    than one worked out again afterwards, and it carries the prefix and lives in
+    the temp directory `set_aside` uses. Failing to clean up is not worth failing
+    a test over, so errors are swallowed - the directory is a few kilobytes and
+    the operating system clears it eventually.
+    """
+    if kept is None:
+        return
+    directory = kept.directory
+    ours = directory.name.startswith(KEPT_PREFIX) and directory.parent == Path(
+        tempfile.gettempdir()
+    )
+    if ours:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 def failure_message(
@@ -270,6 +307,12 @@ def ensure_built(artefact: Artefact) -> Path:
     The cost is that the artefact is rebuilt from nothing once per session rather
     than possibly not at all, which for these two builds is about a third of a
     second.
+
+    Between the move and the build there is a window in which the checkout has no
+    artefact in it, so everything after `set_aside` runs under `try`/`finally`:
+    Ctrl-C during a build, a build that runs past its timeout, or any other way
+    out of here puts the file back. `KeyboardInterrupt` is not an `Exception`,
+    which is the whole reason the cleanup is a `finally` rather than an `except`.
     """
     npm = npm_executable()
     if npm is None:
@@ -282,10 +325,18 @@ def ensure_built(artefact: Artefact) -> Path:
         pytest.skip(NPM_MISSING)
 
     kept = set_aside(artefact.path)
+    try:
+        return built_by_this_run(artefact, npm, kept)
+    finally:
+        restore(kept, artefact.path)
+        discard(kept)
+
+
+def built_by_this_run(artefact: Artefact, npm: str, kept: SetAside | None) -> Path:
+    """Run the build over an empty path and judge what came back. See `ensure_built`."""
     result = run_build(artefact, npm)
 
     if not artefact.path.is_file():
-        restore(kept, artefact.path)
         reason = stale_reason(artefact, result) if kept else None
         pytest.fail(failure_message(artefact, result, reason), pytrace=False)
     if result.returncode != 0:
