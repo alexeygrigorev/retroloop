@@ -153,10 +153,19 @@ itself, so nothing the suite needs is assumed to be there.
 - The number cannot be set to whatever suits a build.
   `tests/test_ci_workflow.py` collects the suite with pytest and asserts
   `EXPECTED_TESTS` equals what collection produces, so a wrong number fails the
-  suite one step before the gate. The same test asks every `tests/test_*.py`
-  file whether anything of it was collected, which is what catches a file
-  removed from collection while an equal number of parametrized cases is added
-  somewhere else - a swap no single total can see.
+  suite one step before the gate.
+- The *set* of test files is pinned too, in `TEST_FILES` in
+  `.github/workflows/ci.yml` - the sorted list of `tests/test_*.py` basenames.
+  **Every branch that adds, removes or renames a test file changes that one
+  line, in the same commit.** A count alone cannot see a file swapped for
+  parametrized cases elsewhere, or renamed off the `test_*.py` convention, or
+  `git rm`'d: the total stays put. So a final job step re-collects the suite
+  itself and fails if the files on disk are not exactly `TEST_FILES`, if any
+  listed file collected nothing (an `--ignore` or a `collect_ignore`), if a
+  `pytest_collection_modifyitems` hook deselected anything (it counts items
+  before and after the hook), or if the count is not `EXPECTED_TESTS`. It is a
+  job step and not a test on purpose: the suite's own guards live in a collected
+  file, and this one still fires when that file is the one dropped.
 - A newer push to the same branch cancels the run it supersedes, so the run
   worth reading is always the one for the tip commit.
 - Reproduce a CI run locally with one command:

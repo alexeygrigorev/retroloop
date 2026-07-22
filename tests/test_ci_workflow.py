@@ -20,10 +20,12 @@ and a file that guards the gate is the last place to opt out of it.
 """
 
 import ast
+import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import textwrap
 from functools import cache
 from pathlib import Path
@@ -42,6 +44,11 @@ USES = re.compile(r"uses:\s*(\S+)")
 #: The two gates that read the JUnit report, by step name.
 COUNT_GATE = "Fail if the number of tests that ran is not the expected count"
 SKIP_GATE = "Fail if any test was skipped"
+
+#: The gate that collects the suite itself and pins its set and size (#72). Runs
+#: as a job step, not a collected test, so dropping the guard file cannot
+#: disable it.
+SET_GATE = "Fail if the set of test files or the number collected has changed"
 
 
 def source() -> str:
@@ -125,7 +132,7 @@ def run_gate(name: str, tmp_path: Path, report: str | None) -> subprocess.Comple
         location.write_text(report)
 
     environment = dict(os.environ, JUNIT_REPORT=str(location))
-    if "EXPECTED_TESTS" in step(name):
+    if "EXPECTED_TESTS" in gate_script(name):
         environment["EXPECTED_TESTS"] = str(expected_tests())
 
     return subprocess.run(
@@ -141,6 +148,91 @@ def expected_tests() -> int:
     declared = re.findall(r'EXPECTED_TESTS: "(\d+)"', source())
     assert len(declared) == 1, f"the count is declared {len(declared)} times, not once"
     return int(declared[0])
+
+
+def committed_test_files() -> list[str]:
+    """The committed set of test-file basenames, read out of the workflow.
+
+    Anchored to the job-env line - newline, indent, a value that starts with a
+    real basename - so it does not also match the `TEST_FILES: "{...}"` the
+    checker prints in its failure message.
+    """
+    declared = re.findall(r'\n +TEST_FILES: "(test_[^"]*)"\n', source())
+    assert len(declared) == 1, f"the file set is declared {len(declared)} times, not once"
+    return sorted(declared[0].split())
+
+
+# --------------------------------------------------------------------------
+# Running the set-and-collection gate — issue #72, second round
+#
+# QA got CI green with 27 tests gone by removing a file from the suite (renamed
+# off the test_*.py convention) and adding 27 cases elsewhere, and separately by
+# --ignore-ing the guard file and by a modifyitems hook that thinned the suite -
+# all invisible to a count that was balanced or lowered to match. The set gate
+# closes those: it runs as a job step (not a collected test, so dropping the
+# guard cannot disable it), collects the suite itself with a plugin that counts
+# items before and after modifyitems, and checks the committed file set and the
+# count. These helpers lift its plugin and its checker out of ci.yml and run
+# them against collections built for the occasion, the way #67 ran the JUnit
+# gates - the behaviour is executed, never string-matched.
+# --------------------------------------------------------------------------
+
+
+def plugin_script(name: str) -> str:
+    """The pytest plugin a named step writes to disk before collecting."""
+    heredoc = re.search(r"<<'PLUGIN'\n(.*?)\n *PLUGIN *$", step(name), re.S | re.M)
+    assert heredoc, f"the {name!r} step writes no PLUGIN heredoc"
+    return textwrap.dedent(heredoc.group(1))
+
+
+def collection(files: list[str], items: int, raw: int | None = None) -> str:
+    """A collection result of the shape the set gate's plugin writes."""
+    return json.dumps(
+        {
+            "raw": items if raw is None else raw,
+            "items": items,
+            "files": sorted(f"tests/{name}" for name in files),
+        }
+    )
+
+
+def run_set_gate(
+    tmp_path: Path,
+    *,
+    on_disk: list[str],
+    result: str,
+    expected: int,
+    manifest: list[str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run the set gate's checker against a collection and a tests/ directory.
+
+    ``on_disk`` is the set of ``test_*.py`` files the checker will find when it
+    globs ``tests/`` - fabricated as empty files in a scratch directory so the
+    file-set assertion can be driven without moving real files. ``result`` is a
+    collection payload from :func:`collection`.
+    """
+    scratch = Path(tempfile.mkdtemp(dir=tmp_path))
+    tests_dir = scratch / "tests"
+    tests_dir.mkdir()
+    for name in on_disk:
+        (tests_dir / name).touch()
+
+    out = scratch / "collect.json"
+    out.write_text(result)
+
+    environment = dict(
+        os.environ,
+        CI_COLLECT_OUT=str(out),
+        EXPECTED_TESTS=str(expected),
+        TEST_FILES=" ".join(committed_test_files() if manifest is None else manifest),
+        TESTS_DIR=str(tests_dir),
+    )
+    return subprocess.run(
+        [sys.executable, "-c", gate_script(SET_GATE)],
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -549,15 +641,31 @@ def test_the_test_count_gate_runs_after_the_suite_and_reads_the_same_report() ->
     assert 'get("tests"' in gate_script(COUNT_GATE)
 
 
-def test_the_expected_count_is_one_line_next_to_the_gate_that_reads_it() -> None:
-    block = step(COUNT_GATE)
+def test_the_committed_shape_is_two_one_line_facts_declared_once() -> None:
+    text = source()
+    job_env = text.split("\n    steps:\n", 1)[0]
 
-    # Declared once, in the step that uses it, on a line of its own - so the
-    # commit that changes it changes exactly one line.
-    assert re.search(r'\n +EXPECTED_TESTS: "\d+"\n', block), block
-    assert len(re.findall(r'EXPECTED_TESTS: "\d+"', source())) == 1
+    # Both facts are declared exactly once, each on a single line, and in the job
+    # env rather than a step - so both gates read the same committed value and a
+    # change to either is one line in the same commit. Two gates now read
+    # EXPECTED_TESTS (the JUnit count gate and the collection/set gate); a copy
+    # per step would be two lines to keep in step, which is the staleness this
+    # issue exists to remove.
+    #
+    # The count is anchored to a numeric value and the file set to one that
+    # starts with a real basename, so neither matches the `EXPECTED_TESTS: "{n}"`
+    # / `TEST_FILES: "{...}"` the set gate prints in its own failure message.
+    count = re.findall(r'\n +EXPECTED_TESTS: "\d+"\n', text)
+    files = re.findall(r'\n +TEST_FILES: "test_[^"]*"\n', text)
+    assert len(count) == 1, count
+    assert len(files) == 1, files
+
+    # And the single declaration of each is above the steps, in the job env.
+    assert count[0] in job_env
+    assert files[0] in job_env
+
     # The floor is gone rather than sitting beside its replacement.
-    assert "MINIMUM_TESTS" not in source()
+    assert "MINIMUM_TESTS" not in text
 
 
 def test_the_expected_count_is_the_number_pytest_actually_collects() -> None:
@@ -626,18 +734,264 @@ def test_the_count_check_reads_the_conftest_that_could_hide_a_file(tmp_path: Pat
     appears, this file is what says so.
     """
     conftest = BASE_DIR / "tests" / "conftest.py"
+    body = conftest.read_text()
 
     assert conftest.is_file(), "tests/conftest.py is gone; collection no longer travels it"
-    assert "collect_ignore" not in conftest.read_text()
+    # Two ways a conftest can quietly shrink the suite: dropping a file from
+    # collection, or deselecting items after they are collected. Neither is
+    # present today. The grep is documentation of that state - what actually
+    # catches either at run time is the set gate, which re-collects the suite in
+    # a job step and fails when a listed file collects nothing (the first) or
+    # when its pre- and post-modifyitems counts disagree (the second). Both are
+    # exercised by run_set_gate below.
+    assert "collect_ignore" not in body
+    assert "pytest_collection_modifyitems" not in body
     assert len(collected()) == expected_tests()
     assert not files_with_nothing_collected(collected())
 
     # And the count gate itself is content with the masked total, which is why
-    # the two tests above exist rather than one more number in the workflow.
+    # the file check exists rather than one more number in the workflow.
     masked_total = len(collected(ignore="tests/test_audio.py"))
     hidden = expected_tests() - masked_total
     restored = run_gate(COUNT_GATE, tmp_path, junit_report(masked_total + hidden))
     assert restored.returncode == 0, restored
+
+
+# --------------------------------------------------------------------------
+# The set gate, run against collections built for the occasion
+# --------------------------------------------------------------------------
+
+
+def test_the_set_gate_runs_after_the_suite_and_collects_independently() -> None:
+    # It is a job step, not a collected test - that is the whole point, so a file
+    # removed from collection cannot disable it. It collects the suite itself
+    # rather than reading the JUnit report the other two gates read.
+    assert index_of("uv run pytest") < index_of(SET_GATE)
+    assert "pytest --collect-only" in step(SET_GATE)
+    assert "JUNIT_REPORT" not in gate_script(SET_GATE)
+
+    # The plugin is written outside the checkout, under a mktemp directory, so
+    # the suite's own walks over the tree never see it and it is not itself a
+    # file that could be dropped.
+    assert "mktemp" in step(SET_GATE)
+    assert "PYTHONPATH" in step(SET_GATE)
+
+
+def test_the_collection_plugin_counts_before_and_after_modifyitems() -> None:
+    """The plugin from ci.yml, run against the real suite.
+
+    Its whole job is to make a thinning hook visible: it counts every item as it
+    is collected (before modifyitems can deselect) and again after. On an honest
+    suite the two are equal and both are the committed count, and every committed
+    file contributes.
+    """
+    with tempfile.TemporaryDirectory() as scratch_name:
+        scratch = Path(scratch_name)
+        (scratch / "_ci_collect.py").write_text(plugin_script(SET_GATE))
+        out = scratch / "collect.json"
+        environment = {
+            key: value for key, value in os.environ.items() if not key.startswith("PYTEST_")
+        }
+        environment["CI_COLLECT_OUT"] = str(out)
+        environment["PYTHONPATH"] = str(scratch)
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "--collect-only",
+                "-q",
+                "-p",
+                "_ci_collect",
+                "-p",
+                "no:cacheprovider",
+            ],
+            cwd=BASE_DIR,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        data = json.loads(out.read_text())
+
+    assert data["raw"] == data["items"] == expected_tests(), data
+    collected_files = {Path(name).name for name in data["files"]}
+    assert collected_files == set(committed_test_files()), sorted(collected_files)
+
+
+def test_the_committed_file_list_is_exactly_the_files_on_disk() -> None:
+    """The suite-level twin of the count check, for the file set.
+
+    A test file added, removed or renamed changes this list, in the same commit,
+    or the suite is red - the same discipline EXPECTED_TESTS imposes on the
+    number. The workflow gate enforces it independently; this fails in two
+    seconds locally.
+    """
+    on_disk = sorted(path.name for path in (BASE_DIR / "tests").glob("test_*.py"))
+
+    assert on_disk == committed_test_files(), (
+        "the set of tests/test_*.py files is not the committed TEST_FILES. If a "
+        "file was added, removed or renamed on purpose, the fix is one line in "
+        f'.github/workflows/ci.yml: TEST_FILES: "{" ".join(on_disk)}"'
+    )
+
+
+def test_the_set_gate_passes_a_consistent_collection(tmp_path: Path) -> None:
+    manifest = committed_test_files()
+    result = run_set_gate(
+        tmp_path,
+        on_disk=manifest,
+        result=collection(manifest, items=expected_tests()),
+        expected=expected_tests(),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_set_gate_fails_when_a_test_file_is_added(tmp_path: Path) -> None:
+    """A new file on disk that the committed list does not mention."""
+    manifest = committed_test_files()
+    result = run_set_gate(
+        tmp_path,
+        on_disk=[*manifest, "test_new.py"],
+        result=collection([*manifest, "test_new.py"], items=expected_tests()),
+        expected=expected_tests(),
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "not the committed set" in output, output
+    assert "added and unlisted: test_new.py" in output, output
+    # Paste-ready: the corrected line, with the new file in its sorted place.
+    assert f'TEST_FILES: "{" ".join(sorted([*manifest, "test_new.py"]))}"' in output, output
+
+
+def test_the_set_gate_fails_when_a_test_file_is_removed(tmp_path: Path) -> None:
+    """A `git rm` of a test file: gone from disk, still in the committed list."""
+    manifest = committed_test_files()
+    kept = [name for name in manifest if name != "test_media_sweeper.py"]
+    result = run_set_gate(
+        tmp_path,
+        on_disk=kept,
+        result=collection(kept, items=expected_tests()),
+        expected=expected_tests(),
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "not the committed set" in output, output
+    assert "listed but not on disk: test_media_sweeper.py" in output, output
+
+
+def test_the_set_gate_fails_when_a_test_file_is_renamed_off_the_convention(tmp_path: Path) -> None:
+    """QA's green-with-27-gone attack: the file renamed off `test_*.py`.
+
+    The 27 tests reappear as parametrized cases elsewhere, so the count is
+    exactly right and nothing is skipped - the two JUnit gates are content. The
+    renamed file is simply no longer a `test_*.py` on disk, so the set no longer
+    matches the committed list.
+    """
+    manifest = committed_test_files()
+    kept = [name for name in manifest if name != "test_media_sweeper.py"]
+    result = run_set_gate(
+        tmp_path,
+        on_disk=kept,  # media_sweeper_tests.py is not a test_*.py, so not globbed
+        result=collection(kept, items=expected_tests()),
+        expected=expected_tests(),
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "listed but not on disk: test_media_sweeper.py" in output, output
+
+
+def test_the_set_gate_fails_when_a_listed_file_collects_nothing(tmp_path: Path) -> None:
+    """The `--ignore` shape, including `--ignore` of the guard file itself.
+
+    The file is on disk and in the committed list, so the set matches - but
+    pytest collected nothing from it. Lowering EXPECTED_TESTS to the reduced
+    number does not help: this fires on the file, not the count.
+    """
+    manifest = committed_test_files()
+    collected_files = [name for name in manifest if name != "test_ci_workflow.py"]
+    lowered = expected_tests() - 45
+    result = run_set_gate(
+        tmp_path,
+        on_disk=manifest,
+        result=collection(collected_files, items=lowered),
+        expected=lowered,  # attacker lowers the count to match the loss
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "test_ci_workflow.py is listed in TEST_FILES but pytest collected nothing" in output
+
+
+def test_the_set_gate_fails_when_a_hook_thins_the_suite(tmp_path: Path) -> None:
+    """The modifyitems attack: every item collected, most deselected after.
+
+    The attacker lowers EXPECTED_TESTS to the thinned number, so the count check
+    and the JUnit gate both agree. The set gate does not, because the plugin
+    counted the items before the hook removed them: raw stays high while items
+    falls, and every file still contributes one test so the file checks pass.
+    """
+    manifest = committed_test_files()
+    thinned = len(manifest)  # one test per module survived
+    result = run_set_gate(
+        tmp_path,
+        on_disk=manifest,
+        result=collection(manifest, items=thinned, raw=expected_tests()),
+        expected=thinned,  # lowered to match the thinned run
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "removed during collection" in output, output
+    assert f"{expected_tests() - thinned} test(s) were removed" in output, output
+
+
+def test_the_set_gate_fails_on_a_wrong_count_either_direction(tmp_path: Path) -> None:
+    manifest = committed_test_files()
+    for delta in (-40, +40):
+        ran = expected_tests() + delta
+        result = run_set_gate(
+            tmp_path,
+            on_disk=manifest,
+            result=collection(manifest, items=ran),
+            expected=expected_tests(),
+        )
+        output = result.stdout + result.stderr
+        assert result.returncode == 1, output
+        assert f"{ran} test(s) collected, expected exactly {expected_tests()}" in output, output
+        assert f'EXPECTED_TESTS: "{ran}"' in output, output
+        assert "same commit" in output, output
+
+
+def test_the_set_gate_catches_the_balanced_rename_the_junit_gates_cannot(tmp_path: Path) -> None:
+    """Criterion 2, end to end across the three gates.
+
+    A file renamed off the convention with its tests replaced elsewhere leaves a
+    JUnit report of exactly the right size and no skips - the count gate and the
+    skip gate both pass it. Only the set gate, which looks at the tree and not
+    the report, sees the file gone.
+    """
+    balanced = junit_report(expected_tests())
+    count_dir = tmp_path / "count"
+    count_dir.mkdir()
+    skip_dir = tmp_path / "skip"
+    skip_dir.mkdir()
+    set_dir = tmp_path / "set"
+    set_dir.mkdir()
+
+    count_ok = run_gate(COUNT_GATE, count_dir, balanced)
+    skip_ok = run_gate(SKIP_GATE, skip_dir, balanced)
+    assert count_ok.returncode == 0, count_ok
+    assert skip_ok.returncode == 0, skip_ok
+
+    manifest = committed_test_files()
+    kept = [name for name in manifest if name != "test_media_sweeper.py"]
+    set_red = run_set_gate(
+        set_dir,
+        on_disk=kept,
+        result=collection(kept, items=expected_tests()),
+        expected=expected_tests(),
+    )
+    assert set_red.returncode == 1, set_red.stdout + set_red.stderr
+    assert "not the committed set" in set_red.stdout + set_red.stderr
 
 
 def test_the_test_count_gate_fails_when_a_test_file_left_the_run(tmp_path: Path) -> None:
