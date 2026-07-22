@@ -246,20 +246,31 @@ jobs:
         # the gate below.
         run: uv run pytest -rs --junitxml="$JUNIT_REPORT"
 
-      - name: Fail if fewer tests ran than the floor
+      - name: Fail if the number of tests that ran is not the expected count
         # The skip gate below reads <skipped> elements, and a test that is never
         # collected writes no <testcase> at all - so removing a whole file from
         # collection is invisible to it. QA proved that: `--ignore=tests/...` in
         # addopts produced a fully green run with a fifth of the suite gone. The
-        # count is therefore checked as well, against a floor committed to this
-        # file. The two gates are independent and neither replaces the other.
+        # count of tests that ran is therefore checked as well.
+        #
+        # It is an exact count and not a floor (#72). A floor only ever fails on
+        # a build that is already failing, so the reminder to raise it prints on
+        # a green run in a step nobody opens, and it goes stale: the number was
+        # left behind twice in one day. Worse, a floor can be edited downwards to
+        # make a red build green, which is the one edit it exists to prevent.
+        # An exact count is maintained by construction - every change to the size
+        # of the suite has to move this line in the same commit, and the diff
+        # shows it.
         env:
-          # The floor: the number of tests this suite is known to run. When the
-          # suite genuinely grows the number is raised deliberately, in this one
-          # line. It is never lowered to make a build pass. A run that reports
-          # fewer tests than this has lost tests, and losing tests is the
-          # failure being caught here, not a reason to edit the number down.
-          MINIMUM_TESTS: "1383"
+          # The number of tests this suite runs. Not a floor: a run that reports
+          # more tests than this fails too, and the failure below says which one
+          # line to change and to what.
+          #
+          # It cannot be set to a number that suits a build. tests/test_ci_workflow.py
+          # collects the real suite with pytest and asserts this value equals what
+          # collection produces, so a value the suite does not actually produce
+          # fails the suite itself, one step above this one.
+          EXPECTED_TESTS: "1387"
         run: |
           python3 - <<'PY'
           import os
@@ -268,23 +279,30 @@ jobs:
           from pathlib import Path
 
           report = Path(os.environ["JUNIT_REPORT"])
-          floor = int(os.environ["MINIMUM_TESTS"])
+          expected = int(os.environ["EXPECTED_TESTS"])
           if not report.is_file():
               sys.exit(f"::error::{report} is missing - pytest wrote no report.")
 
           root = ET.parse(report).getroot()
           ran = sum(int(suite.get("tests", 0)) for suite in root.iter("testsuite"))
-          if ran < floor:
-              print(f"::error::{ran} test(s) ran, below the floor of {floor}. Tests left the run.")
-              print("  A test dropped from collection writes no result at all, so the skip")
-              print("  gate cannot see it - this count is what catches it. Find the tests.")
-              print("  MINIMUM_TESTS in .github/workflows/ci.yml is the floor. Raising it")
-              print("  is that one line; it is never lowered to make a build pass.")
+          if ran != expected:
+              print(f"::error::{ran} test(s) ran, expected exactly {expected}.")
+              if ran < expected:
+                  print(f"  {expected - ran} test(s) that this suite is known to run did not")
+                  print("  run at all. A test dropped from collection writes no result, so the")
+                  print("  skip gate cannot see it - this count is what catches it. Look for an")
+                  print("  --ignore in addopts, a collect_ignore in tests/conftest.py, or a file")
+                  print("  that left the tree, and be sure the loss is intended before you")
+                  print("  change the number below.")
+              else:
+                  print(f"  The suite grew by {ran - expected} test(s).")
+              print("  When the change is intended, the fix is one line in")
+              print(f'  .github/workflows/ci.yml: EXPECTED_TESTS: "{ran}".')
+              print("  Change it in the same commit that changes the suite. Every branch that")
+              print("  adds or removes a test moves this line, including yours.")
               sys.exit(1)
 
-          print(f"{ran} test(s) ran, floor {floor}.")
-          if ran > floor:
-              print(f"The suite has grown. Raise the floor in one line: MINIMUM_TESTS: \"{ran}\".")
+          print(f"{ran} test(s) ran, exactly the expected {expected}.")
           PY
 
       - name: Fail if any test was skipped

@@ -142,10 +142,21 @@ itself, so nothing the suite needs is assumed to be there.
 - A test removed from collection fails the build too. A file that is never
   collected writes no result at all, so the skip gate above cannot see it - an
   `--ignore=` in `addopts` once produced a fully green run with the whole media
-  pipeline gone. So the number of tests that ran is checked against a floor,
-  `MINIMUM_TESTS` in `.github/workflows/ci.yml`. When the suite grows, raise it:
-  the failure prints the new number and it is one line. It is never lowered to
-  make a build pass.
+  pipeline gone. So the number of tests that ran is checked against
+  `EXPECTED_TESTS` in `.github/workflows/ci.yml`, and it is an exact count, not
+  a floor: a run with more tests than that is red as well as a run with fewer.
+  **Every branch that adds or removes a test changes that one line, in the same
+  commit.** The failure prints the line to paste, with the number already in it.
+  A floor was tried first (#67) and went stale twice in a day, because the run
+  that asks for it to be raised is green and the run that tempts you to lower it
+  is red.
+- The number cannot be set to whatever suits a build.
+  `tests/test_ci_workflow.py` collects the suite with pytest and asserts
+  `EXPECTED_TESTS` equals what collection produces, so a wrong number fails the
+  suite one step before the gate. The same test asks every `tests/test_*.py`
+  file whether anything of it was collected, which is what catches a file
+  removed from collection while an equal number of parametrized cases is added
+  somewhere else - a swap no single total can see.
 - A newer push to the same branch cancels the run it supersedes, so the run
   worth reading is always the one for the tip commit.
 - Reproduce a CI run locally with one command:

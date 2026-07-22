@@ -25,6 +25,7 @@ import re
 import subprocess
 import sys
 import textwrap
+from functools import cache
 from pathlib import Path
 
 from django.conf import settings
@@ -39,7 +40,7 @@ ALLOWED_ACTIONS = {"actions/checkout", "actions/setup-node", "astral-sh/setup-uv
 USES = re.compile(r"uses:\s*(\S+)")
 
 #: The two gates that read the JUnit report, by step name.
-COUNT_GATE = "Fail if fewer tests ran than the floor"
+COUNT_GATE = "Fail if the number of tests that ran is not the expected count"
 SKIP_GATE = "Fail if any test was skipped"
 
 
@@ -124,8 +125,8 @@ def run_gate(name: str, tmp_path: Path, report: str | None) -> subprocess.Comple
         location.write_text(report)
 
     environment = dict(os.environ, JUNIT_REPORT=str(location))
-    if "MINIMUM_TESTS" in step(name):
-        environment["MINIMUM_TESTS"] = str(floor())
+    if "EXPECTED_TESTS" in step(name):
+        environment["EXPECTED_TESTS"] = str(expected_tests())
 
     return subprocess.run(
         [sys.executable, "-c", gate_script(name)],
@@ -135,11 +136,98 @@ def run_gate(name: str, tmp_path: Path, report: str | None) -> subprocess.Comple
     )
 
 
-def floor() -> int:
-    """The committed floor on the number of tests, read out of the workflow."""
-    declared = re.findall(r'MINIMUM_TESTS: "(\d+)"', source())
-    assert len(declared) == 1, f"the floor is declared {len(declared)} times, not once"
+def expected_tests() -> int:
+    """The committed number of tests, read out of the workflow."""
+    declared = re.findall(r'EXPECTED_TESTS: "(\d+)"', source())
+    assert len(declared) == 1, f"the count is declared {len(declared)} times, not once"
     return int(declared[0])
+
+
+# --------------------------------------------------------------------------
+# Counting the tests there actually are — issue #72
+#
+# The number in the workflow is only worth anything if something checks it
+# against reality. #67 checked it against the count of `def test_` lines - 578 of
+# them against a suite of over 1,300, the rest being parametrized cases - so
+# `MINIMUM_TESTS: "600"` passed the whole workflow test file with three test
+# files' worth of room to spare. The number is therefore compared against a real
+# pytest collection: the same machinery that produces the run, including
+# `addopts`, including `tests/conftest.py` and any `collect_ignore` in it.
+#
+# Collection runs in a subprocess and does not touch the database, so this is a
+# few seconds and no fixtures. PYTEST_* variables are dropped from its
+# environment: PYTEST_ADDOPTS with a `-k` in it would otherwise let whoever ran
+# the suite decide what the suite is.
+# --------------------------------------------------------------------------
+
+#: Collects the suite and prints one line per collected test. `pytest.main` in a
+#: subprocess rather than a file on disk, so nothing is written anywhere.
+COLLECTOR = """
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+
+class Report:
+    def pytest_collection_finish(self, session):
+        for item in session.items:
+            print("collected " + item.nodeid)
+
+
+class IgnoreOneFile:
+    # Exactly what a `collect_ignore` entry in a conftest does: pytest's own
+    # pytest_ignore_collect hook is what reads `collect_ignore`, and this is
+    # that hook.
+    def __init__(self, path):
+        self.path = Path(path).resolve()
+
+    def pytest_ignore_collect(self, collection_path, config):
+        return True if collection_path == self.path else None
+
+
+plugins = [Report()]
+ignore = os.environ.get("COLLECT_IGNORE")
+if ignore:
+    plugins.append(IgnoreOneFile(ignore))
+
+sys.exit(pytest.main(["--collect-only", "-q", "-p", "no:cacheprovider"], plugins=plugins))
+"""
+
+
+@cache
+def collected(ignore: str | None = None) -> tuple[str, ...]:
+    """Every test pytest collects, as node ids, optionally with one file ignored."""
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("PYTEST_")}
+    if ignore is not None:
+        environment["COLLECT_IGNORE"] = str(BASE_DIR / ignore)
+
+    result = subprocess.run(
+        [sys.executable, "-c", COLLECTOR],
+        cwd=BASE_DIR,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    prefix = "collected "
+    ids = tuple(
+        line[len(prefix) :] for line in result.stdout.splitlines() if line.startswith(prefix)
+    )
+    assert ids, result.stdout + result.stderr
+    return ids
+
+
+def suite_files_on_disk() -> set[str]:
+    """Every file in `tests/` pytest is meant to collect something from."""
+    return {f"tests/{path.name}" for path in (BASE_DIR / "tests").glob("test_*.py")}
+
+
+def files_with_nothing_collected(node_ids: tuple[str, ...]) -> set[str]:
+    """Test files on disk that contributed no collected test at all."""
+    return suite_files_on_disk() - {node_id.partition("::")[0] for node_id in node_ids}
 
 
 # --------------------------------------------------------------------------
@@ -438,13 +526,17 @@ def test_the_skip_gate_reports_the_node_id_and_the_reason() -> None:
 
 
 # --------------------------------------------------------------------------
-# A test removed from collection is red too — issue #67
+# A test removed from collection is red too — issues #67 and #72
 #
 # The skip gate reads `<skipped>` elements. A test that is never collected
 # writes no `<testcase>` at all, so it is invisible to that gate: QA put
 # `--ignore=tests/test_audio.py` in addopts and got a green run with a fifth of
-# the suite gone. The count of tests that ran is checked against a committed
-# floor as well, and the two gates are independent.
+# the suite gone. The count of tests that ran is checked as well.
+#
+# #67 checked it against a floor. #72 makes it an exact count, because a floor
+# is only ever wrong in the direction nobody feels: the run that would tell you
+# to raise it is green and the run that tempts you to lower it is red. An exact
+# count moves in the commit that changes the suite or the build is red.
 # --------------------------------------------------------------------------
 
 
@@ -457,67 +549,145 @@ def test_the_test_count_gate_runs_after_the_suite_and_reads_the_same_report() ->
     assert 'get("tests"' in gate_script(COUNT_GATE)
 
 
-def test_the_floor_is_one_line_next_to_the_gate_that_reads_it() -> None:
+def test_the_expected_count_is_one_line_next_to_the_gate_that_reads_it() -> None:
     block = step(COUNT_GATE)
 
-    # Declared once, in the step that uses it, on a line of its own.
-    assert re.search(r'\n +MINIMUM_TESTS: "\d+"\n', block), block
-    assert len(re.findall(r'MINIMUM_TESTS: "\d+"', source())) == 1
-
-    # And the comment beside it - not the failure message, the comment someone
-    # editing the number reads first - says which way the number may move.
-    comments = "\n".join(line for line in block.splitlines() if line.lstrip().startswith("#"))
-    assert "never lowered to make a build pass" in comments, comments
-    assert "deliberately" in comments, comments
+    # Declared once, in the step that uses it, on a line of its own - so the
+    # commit that changes it changes exactly one line.
+    assert re.search(r'\n +EXPECTED_TESTS: "\d+"\n', block), block
+    assert len(re.findall(r'EXPECTED_TESTS: "\d+"', source())) == 1
+    # The floor is gone rather than sitting beside its replacement.
+    assert "MINIMUM_TESTS" not in source()
 
 
-def test_the_floor_is_not_a_number_the_suite_would_clear_with_tests_missing() -> None:
-    """A floor of 1 would pass every mutilated run there is.
+def test_the_expected_count_is_the_number_pytest_actually_collects() -> None:
+    """The number is checked against a real collection, not against `def test_`.
 
-    Every test function in `tests/` contributes at least one collected test, so
-    the number of them is a lower bound on an honest floor - and a floor set
-    below it would be one that a suite with whole files missing still clears.
+    This is the hole #72 exists to close. #67 pinned the floor to the count of
+    `def test_` lines, 578 of them against a suite of over 1,300 - so `"600"` was
+    a legal value for the floor and hid three test files. Here the suite is
+    collected, by pytest, the way CI collects it, and the workflow's number has
+    to equal what comes back. There is no value that suits a build and passes.
     """
-    functions = sum(
-        len(re.findall(r"^def test_", path.read_text(), re.M))
-        for path in sorted((BASE_DIR / "tests").glob("test_*.py"))
+    running = len(collected())
+
+    assert running == expected_tests(), (
+        f"{running} tests collect, but .github/workflows/ci.yml expects "
+        f"{expected_tests()}. If that change is intended - and every branch that "
+        f"adds or removes a test makes it - the fix is one line, in the same "
+        f'commit: EXPECTED_TESTS: "{running}".'
     )
 
-    assert functions > 0
-    assert floor() >= functions, f"floor {floor()} is below the {functions} tests defined in tests/"
+
+def test_every_test_file_on_disk_contributes_at_least_one_collected_test() -> None:
+    """A file can be dropped from collection without changing the total.
+
+    The count is fungible across files: QA removed `tests/test_audio.py` from
+    collection, added 20 parametrized cases to `tests/test_home.py`, and got a
+    fully green run with the media pipeline gone. No single number can see that,
+    so this does not use one - it asks each file on disk whether anything of
+    it ran.
+    """
+    missing = files_with_nothing_collected(collected())
+
+    assert not missing, (
+        f"{sorted(missing)} are in tests/ but pytest collects nothing from them. "
+        f"Look for an --ignore in addopts, a collect_ignore in tests/conftest.py, "
+        f"or a module-level import error."
+    )
+
+
+def test_a_file_removed_from_collection_is_caught_when_the_count_is_restored() -> None:
+    """QA's attack on #67, run rather than described.
+
+    `tests/test_audio.py` leaves collection through the very hook a
+    `collect_ignore` in `tests/conftest.py` feeds, and the tests it would have
+    contributed are assumed to reappear as parametrized cases somewhere else.
+    The total is then exactly what the workflow expects, and the file check is
+    what is left standing.
+    """
+    masked = collected(ignore="tests/test_audio.py")
+    hidden = len(collected()) - len(masked)
+
+    assert hidden > 0, "ignoring tests/test_audio.py collected the same tests"
+    # Cases added elsewhere make the count agree again - the gate sees a
+    # perfectly ordinary run.
+    assert len(masked) + hidden == expected_tests()
+    # And the file is still gone.
+    assert files_with_nothing_collected(masked) == {"tests/test_audio.py"}
+
+
+def test_the_count_check_reads_the_conftest_that_could_hide_a_file(tmp_path: Path) -> None:
+    """#54 gave the project a `tests/conftest.py`, the natural home for a hide.
+
+    Collection here goes through it, so a `collect_ignore` added to it moves
+    both checks above. Today it declares none, and the expected count holds with
+    the conftest in place - which is the state this asserts, so that the day one
+    appears, this file is what says so.
+    """
+    conftest = BASE_DIR / "tests" / "conftest.py"
+
+    assert conftest.is_file(), "tests/conftest.py is gone; collection no longer travels it"
+    assert "collect_ignore" not in conftest.read_text()
+    assert len(collected()) == expected_tests()
+    assert not files_with_nothing_collected(collected())
+
+    # And the count gate itself is content with the masked total, which is why
+    # the two tests above exist rather than one more number in the workflow.
+    masked_total = len(collected(ignore="tests/test_audio.py"))
+    hidden = expected_tests() - masked_total
+    restored = run_gate(COUNT_GATE, tmp_path, junit_report(masked_total + hidden))
+    assert restored.returncode == 0, restored
 
 
 def test_the_test_count_gate_fails_when_a_test_file_left_the_run(tmp_path: Path) -> None:
     """The exact shape of QA's attack: fewer tests, none of them skipped."""
-    result = run_gate(COUNT_GATE, tmp_path, junit_report(floor() - 19))
+    result = run_gate(COUNT_GATE, tmp_path, junit_report(expected_tests() - 19))
 
     assert result.returncode == 1, result
     output = result.stdout + result.stderr
     assert "::error::" in output, output
-    assert str(floor() - 19) in output and str(floor()) in output, output
+    assert str(expected_tests() - 19) in output and str(expected_tests()) in output, output
 
 
-def test_the_test_count_gate_passes_a_full_run_and_a_grown_one(tmp_path: Path) -> None:
-    at_the_floor = run_gate(COUNT_GATE, tmp_path, junit_report(floor()))
-    assert at_the_floor.returncode == 0, at_the_floor
+def test_the_test_count_gate_fails_a_run_that_grew_as_well(tmp_path: Path) -> None:
+    """The half a floor cannot do, and the half that keeps the number honest.
 
-    grown = run_gate(COUNT_GATE, tmp_path, junit_report(floor() + 40))
-    assert grown.returncode == 0, grown
+    A run with more tests than expected is not a build to wave through: it is a
+    branch that added tests without moving the line, and the next branch to
+    remove tests would have hidden behind the slack.
+    """
+    result = run_gate(COUNT_GATE, tmp_path, junit_report(expected_tests() + 40))
 
-
-def test_the_test_count_gate_says_raising_the_floor_is_one_line(tmp_path: Path) -> None:
-    """The message has to be actionable by someone who has never read this file."""
-    result = run_gate(COUNT_GATE, tmp_path, junit_report(floor() - 1))
+    assert result.returncode == 1, result
     output = result.stdout + result.stderr
+    assert "::error::" in output, output
+    assert str(expected_tests() + 40) in output, output
 
-    assert "MINIMUM_TESTS" in output, output
-    assert ".github/workflows/ci.yml" in output, output
-    assert "one line" in output, output
-    assert "never lowered" in output, output
 
-    # And a run that has outgrown the floor says what the new number would be.
-    grown = run_gate(COUNT_GATE, tmp_path, junit_report(floor() + 40))
-    assert f'MINIMUM_TESTS: "{floor() + 40}"' in grown.stdout, grown.stdout
+def test_the_test_count_gate_passes_exactly_the_expected_run(tmp_path: Path) -> None:
+    result = run_gate(COUNT_GATE, tmp_path, junit_report(expected_tests()))
+
+    assert result.returncode == 0, result
+    assert str(expected_tests()) in result.stdout, result.stdout
+
+
+def test_the_test_count_gate_says_which_one_line_to_change_and_to_what(tmp_path: Path) -> None:
+    """The message has to be actionable by someone who has never read this file."""
+    for ran in (expected_tests() - 1, expected_tests() + 40):
+        result = run_gate(COUNT_GATE, tmp_path, junit_report(ran))
+        output = result.stdout + result.stderr
+
+        assert ".github/workflows/ci.yml" in output, output
+        assert "one line" in output, output
+        # Not "raise EXPECTED_TESTS" but the line to paste, with the number in it.
+        assert f'EXPECTED_TESTS: "{ran}"' in output, output
+        assert "same commit" in output, output
+
+    # A run that lost tests says so before it says how to change the number.
+    lost = run_gate(COUNT_GATE, tmp_path, junit_report(expected_tests() - 1))
+    assert "did not" in lost.stdout, lost.stdout
+    assert "collect_ignore" in lost.stdout, lost.stdout
 
 
 def test_the_test_count_gate_fails_when_pytest_wrote_no_report(tmp_path: Path) -> None:
@@ -528,8 +698,10 @@ def test_the_test_count_gate_fails_when_pytest_wrote_no_report(tmp_path: Path) -
 
 
 def test_the_skip_gate_still_fails_a_skipped_test(tmp_path: Path) -> None:
-    """#30's gate, run rather than read, so #67 cannot quietly have replaced it."""
-    report = junit_report(floor(), skips=(("tests.test_audio::test_probe", "ffmpeg missing"),))
+    """#30's gate, run rather than read, so #67 and #72 cannot have replaced it."""
+    report = junit_report(
+        expected_tests(), skips=(("tests.test_audio::test_probe", "ffmpeg missing"),)
+    )
     result = run_gate(SKIP_GATE, tmp_path, report)
     output = result.stdout + result.stderr
 
@@ -539,7 +711,7 @@ def test_the_skip_gate_still_fails_a_skipped_test(tmp_path: Path) -> None:
 
 
 def test_the_skip_gate_passes_a_clean_report(tmp_path: Path) -> None:
-    result = run_gate(SKIP_GATE, tmp_path, junit_report(floor()))
+    result = run_gate(SKIP_GATE, tmp_path, junit_report(expected_tests()))
 
     assert result.returncode == 0, result
     assert "No test skipped." in result.stdout, result.stdout
@@ -549,7 +721,7 @@ def test_the_two_gates_catch_different_things(tmp_path: Path) -> None:
     """Neither gate covers the other, which is why both are here."""
     lost = tmp_path / "lost"
     lost.mkdir()
-    missing_tests = junit_report(floor() - 19)
+    missing_tests = junit_report(expected_tests() - 19)
 
     # Tests gone from collection: nothing is skipped, so only the count sees it.
     assert run_gate(SKIP_GATE, lost, missing_tests).returncode == 0
@@ -557,7 +729,9 @@ def test_the_two_gates_catch_different_things(tmp_path: Path) -> None:
 
     hidden = tmp_path / "hidden"
     hidden.mkdir()
-    skipped = junit_report(floor(), skips=(("tests.test_audio::test_probe", "ffmpeg missing"),))
+    skipped = junit_report(
+        expected_tests(), skips=(("tests.test_audio::test_probe", "ffmpeg missing"),)
+    )
 
     # The full suite ran and 1 test opted out: only the skip gate sees that.
     assert run_gate(COUNT_GATE, hidden, skipped).returncode == 0
@@ -618,14 +792,19 @@ def test_agents_md_says_what_ci_runs_and_how_to_reproduce_it() -> None:
         assert command in reproduce, reproduce
 
 
-def test_agents_md_says_the_number_of_tests_has_a_floor_and_how_to_raise_it() -> None:
+def test_agents_md_says_the_test_count_is_exact_and_who_has_to_change_it() -> None:
     agents = (BASE_DIR / "AGENTS.md").read_text()
     section = agents.split("\nCI\n", 1)[1]
 
-    assert "MINIMUM_TESTS" in section
+    assert "EXPECTED_TESTS" in section
+    assert "MINIMUM_TESTS" not in section
     assert "collection" in section
     # Named the same way in the docs as in the file someone will go and edit.
     assert ".github/workflows/ci.yml" in section
+    # The two things a person merging a branch has to know: the count is exact,
+    # so it fails upwards too, and moving it is their job in their own commit.
+    assert "exact count" in section
+    assert "same commit" in section
 
 
 def test_this_file_needs_no_yaml_parser_and_no_new_dependency() -> None:
