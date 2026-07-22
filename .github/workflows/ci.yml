@@ -77,6 +77,14 @@ jobs:
       # Every `uv run` below works from the committed lock file instead of
       # re-resolving against the index, the rule the Dockerfile already applies.
       UV_FROZEN: "1"
+      # The same resolver window uv.lock was resolved with, which it records as
+      # `exclude-newer-span = "P7D"`. It comes from a machine-level uv config on
+      # the developer side, and a runner has no such config: without it uv sees
+      # the window removed, re-resolves, and `uv sync --locked` fails on a lock
+      # file nobody touched. tests/test_ci_workflow.py keeps this value and the
+      # one in uv.lock in step, and says to drop it if the lock stops recording
+      # a span.
+      UV_EXCLUDE_NEWER: "7 days"
       # Written outside the checkout so the suite's own walks over the working
       # tree never see it.
       JUNIT_REPORT: ${{ github.workspace }}/../junit.xml

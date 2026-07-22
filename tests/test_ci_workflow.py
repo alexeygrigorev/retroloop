@@ -180,6 +180,25 @@ def test_uv_run_never_re_resolves() -> None:
     assert 'UV_FROZEN: "1"' in commands()
 
 
+def test_the_resolver_window_is_the_one_the_lock_file_was_resolved_with() -> None:
+    """`uv sync --locked` fails on an untouched lock file without this.
+
+    uv.lock records the exclude-newer span it was resolved under. That span
+    comes from a uv config on the developer's machine, and a runner has none, so
+    uv sees the window removed and re-resolves - and then reports the lock as
+    out of date when nothing in the project changed. The two values have to stay
+    in step, in both directions: a lock that stops recording a span means the
+    workflow should stop setting the variable.
+    """
+    lock = (BASE_DIR / "uv.lock").read_text()
+    span = re.search(r'exclude-newer-span = "P(\d+)D"', lock)
+
+    if span:
+        assert f'UV_EXCLUDE_NEWER: "{span.group(1)} days"' in commands()
+    else:
+        assert "UV_EXCLUDE_NEWER" not in commands()
+
+
 def test_npm_dependencies_install_from_the_committed_lock_file() -> None:
     text = commands()
 
