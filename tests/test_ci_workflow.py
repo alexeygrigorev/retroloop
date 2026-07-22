@@ -307,7 +307,7 @@ def test_the_bundle_the_suite_reads_is_the_one_this_job_builds() -> None:
 
     # The two guards live in #54's file, not this one. What this test owns is
     # the other half of the bargain: whatever they guard on, this job builds.
-    assert island.count("island not built yet") == 2
+    assert island.count("built_island: Path") == 2
     assert "npm run build:js" in island
     assert 'BASE_DIR / "static" / settings.VITE_BUILD_SUBDIR' in island
 
