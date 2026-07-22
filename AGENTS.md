@@ -35,6 +35,15 @@ Rules
   asking.
 - Templates extend `templates/base_app.html`, which is `base.html` plus the
   account controls in the navigation bar.
+- Styling: a template that renders a whole page extends `base_app.html`.
+  Buttons, links, headings, panels and form fields use the named classes from
+  `assets/css/app.css` - `.btn-primary`, `.btn-secondary`, `.link`,
+  `.page-heading`, `.panel`, `.form-fields` - rather than a fresh class string.
+  A form renders `{{ form.as_div }}` inside an element with `class="form-fields"`
+  and needs nothing else to be styled, never `{{ form.as_p }}` and never a class
+  attribute set in Python. A new colour is added to the `@theme` block, never
+  written inline. `assets/css/app.css` is the one file to open to see what
+  already exists; there is no second document to keep in sync.
 - Tailwind is configured CSS-first in `assets/css/app.css`; there is no
   `tailwind.config.js`. htmx and Alpine are vendored in `static/vendor/` at
   pinned versions, never loaded from a CDN. Node is a build-time tool only, so

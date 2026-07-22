@@ -452,3 +452,21 @@ def test_every_colour_the_theme_declares_is_actually_used() -> None:
     used = STYLESHEET.split("}", 1)[-1] + "".join(TEMPLATE_SOURCES.values())
     for colour in declared:
         assert colour in used, f"--color-{colour} is declared and used nowhere"
+
+
+# --------------------------------------------------------------------------
+# D. The rule new screens follow
+# --------------------------------------------------------------------------
+
+
+def test_agents_md_states_the_styling_rule() -> None:
+    agents = (BASE_DIR / "AGENTS.md").read_text()
+    styling = agents.split("Styling", 1)
+
+    assert len(styling) == 2, "AGENTS.md has no Styling entry"
+    rule = styling[1].split("\n- ")[0]
+
+    assert "base_app.html" in rule
+    assert "assets/css/app.css" in rule
+    assert "as_p" in rule
+    assert "@theme" in rule
