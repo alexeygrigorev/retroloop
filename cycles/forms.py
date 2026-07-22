@@ -1,6 +1,6 @@
-"""The form that opens a cycle.
+"""The forms that open a cycle and write a card into one.
 
-Everything the form refuses is refused for the same reason: the database would
+Everything a form refuses is refused for the same reason: the database would
 otherwise refuse it with an `IntegrityError`, which reaches the user as a 500
 instead of as a sentence. The constraints stay in the database — this is the
 polite reading of them, not a replacement.
@@ -12,7 +12,7 @@ from django import forms
 from django.contrib.auth import get_user_model
 from django.utils.formats import date_format
 
-from cycles.models import FeedbackCycle, monday_of
+from cycles.models import CARD_TEXT_MAX_LENGTH, Card, FeedbackCycle, monday_of
 from projects.models import Project
 
 User = get_user_model()
@@ -86,3 +86,59 @@ class FeedbackCycleForm(forms.ModelForm):
             )
 
         return cleaned_data
+
+
+class CardForm(forms.ModelForm):
+    """Write or re-word one card.
+
+    Neither the cycle, the category nor the author is a field. The first two
+    come from the URL and the third from the session, so none of them can be
+    supplied by the request — a card can never be posted into someone else's
+    cycle, into a section it is not under, or in another member's name.
+
+    `is_anonymous` is a field on both create and edit, because the checkbox may
+    still be changed while the cycle is collecting.
+    """
+
+    class Meta:
+        model = Card
+        fields: ClassVar[list[str]] = ["text", "is_anonymous"]
+        widgets: ClassVar[dict[str, forms.Widget]] = {
+            "text": forms.Textarea(
+                attrs={
+                    "rows": 2,
+                    # A browser-side courtesy that stops the typing, next to the
+                    # server-side cap the field length already enforces.
+                    "maxlength": CARD_TEXT_MAX_LENGTH,
+                    "placeholder": "One short thing.",
+                    # The remaining-characters counter, kept next to the widget
+                    # that feeds it. `maxLength` is read off the element, so the
+                    # cap is written once, in `CARD_TEXT_MAX_LENGTH`.
+                    "@input": "remaining = $event.target.maxLength - $event.target.value.length",
+                }
+            ),
+        }
+        labels: ClassVar[dict[str, str]] = {
+            "text": "Your card",
+            "is_anonymous": "Post this anonymously",
+        }
+        help_texts: ClassVar[dict[str, str]] = {
+            # Next to the checkbox, in words, because the consequence is
+            # permanent and `_docs/decisions.md` item 3 has no way back from it.
+            "is_anonymous": (
+                "When the retrospective starts, your name is removed from this card "
+                "permanently. That cannot be undone, and nobody can look it up afterwards."
+            ),
+        }
+
+    def clean_text(self) -> str:
+        """Reject nothing-but-space, and store what is left without it.
+
+        A card of spaces is an empty card that passes `required`, so the check
+        is on the stripped value; the stripped value is also what gets stored,
+        so no row carries padding a member cannot see.
+        """
+        text = self.cleaned_data["text"].strip()
+        if not text:
+            raise forms.ValidationError("A card needs some words on it.")
+        return text

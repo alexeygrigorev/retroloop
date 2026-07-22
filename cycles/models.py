@@ -1,4 +1,4 @@
-"""The weekly feedback cycle.
+"""The weekly feedback cycle and the cards submitted into it.
 
 A cycle is the container everything else in a week hangs off: the cards
 submitted into it (#8) and the retrospective that follows it (#9). It has two
@@ -115,3 +115,77 @@ class FeedbackCycle(models.Model):
         `projects/permissions.py` with the rest.
         """
         return self.is_collecting
+
+
+#: What a card may not be longer than. The form says it, the model field says
+#: it, and Postgres says it, so a request that goes round the form still hits
+#: the cap.
+CARD_TEXT_MAX_LENGTH = 500
+
+
+class Card(models.Model):
+    """One Start, Stop or Continue note, written by one member into one cycle.
+
+    Three fields are shaped by what happens *after* this issue, and are the
+    reason they look over-general here:
+
+    - `author` is nullable from this first migration. `_docs/decisions.md` item
+      3 has #10 set it to NULL at reveal for an anonymous card, permanently and
+      with no archive. Making the column nullable later would be a migration on
+      a populated table, which is exactly what that decision exists to avoid.
+    - `is_anonymous` is the member's intent, not the state of the row.
+      Anonymity is applied at reveal, so `author` is set on every card as it is
+      written, including the anonymous ones.
+    - `position` is written by #10 when it shuffles revealed cards. Until then
+      it carries no meaning, so nothing sorts by it — the ordering below is by
+      creation, which is the order the member typed them in.
+    """
+
+    class Category(models.TextChoices):
+        START = "START", "Start"
+        STOP = "STOP", "Stop"
+        CONTINUE = "CONTINUE", "Continue"
+
+    cycle = models.ForeignKey(
+        FeedbackCycle,
+        on_delete=models.CASCADE,
+        related_name="cards",
+    )
+    category = models.CharField(max_length=20, choices=Category.choices)
+    # A varchar rather than an unbounded text column: the cap is a rule about
+    # the data, so the database holds it too.
+    text = models.CharField(max_length=CARD_TEXT_MAX_LENGTH)
+    # SET_NULL and not CASCADE or PROTECT: a card with no author is a state the
+    # product already has, because reveal creates it. Removing a person leaves
+    # the team's feedback where it is, in that same state, and needs no new
+    # branch anywhere that reads a card.
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="cards",
+    )
+    is_anonymous = models.BooleanField(default=False)
+    position = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # By creation, never by `position`: see the note above.
+        ordering: ClassVar[list[str]] = ["created_at", "id"]
+        indexes: ClassVar[list[models.Index]] = [
+            # Every card query is "this cycle, this author", because a member
+            # only ever sees their own.
+            models.Index(fields=["cycle", "author"], name="cycles_card_cycle_author"),
+        ]
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            # Whitespace-only text is refused by the form with a sentence; this
+            # is the same rule where a form cannot be gone round.
+            models.CheckConstraint(
+                condition=~models.Q(text__regex=r"^\s*$"),
+                name="cycles_card_text_not_blank",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.get_category_display()}: {self.text[:40]}"
