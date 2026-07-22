@@ -259,7 +259,7 @@ jobs:
           # line. It is never lowered to make a build pass. A run that reports
           # fewer tests than this has lost tests, and losing tests is the
           # failure being caught here, not a reason to edit the number down.
-          MINIMUM_TESTS: "1017"
+          MINIMUM_TESTS: "1295"
         run: |
           python3 - <<'PY'
           import os
