@@ -92,3 +92,23 @@ not a broker: `django.tasks` with the `django-tasks-db` ORM backend, drained by
   `django_capture_on_commit_callbacks(execute=True)` fixture, or ask for
   `django_db(transaction=True)` when the test needs the real queue table.
 
+
+CI
+
+`.github/workflows/ci.yml` runs on every push to any branch, on pull requests
+targeting `main`, and on demand. One job: `uv sync --locked`, both ruff checks,
+`makemigrations --check --dry-run`, `npm ci` and `npm run build:css`, then the
+whole suite against a `postgres:18` service container. It builds the stylesheet
+and installs ffmpeg itself, so nothing the suite needs is assumed to be there.
+
+- A skipped test fails the build. The suite writes a JUnit report and a step
+  after it fails the job when any test skipped, printing the node id and the
+  reason. A skip is how this project's two silent opt-outs - the collectstatic
+  test and all of `tests/test_audio.py` without ffmpeg - would otherwise leave a
+  broken run reading green. A test that genuinely has to skip changes that gate
+  in the same commit.
+- A newer push to the same branch cancels the run it supersedes, so the run
+  worth reading is always the one for the tip commit.
+- Reproduce a CI run locally with one command:
+  `uv sync --locked && npm ci && npm run build:css && uv run ruff check . && uv run ruff format --check . && uv run manage.py makemigrations --check --dry-run && uv run pytest -rs`
+  The `-rs` is the point: it lists every skip, which CI turns into a failure.
