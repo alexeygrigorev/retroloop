@@ -248,6 +248,82 @@ def test_a_missing_stylesheet_fails_the_job_and_names_the_command() -> None:
     assert any("npm run build:css" in line for line in errors), errors
 
 
+def test_the_island_bundle_is_built_after_npm_ci_and_before_the_suite() -> None:
+    """Issue #63: the second built artefact gets the same treatment as the first.
+
+    `npm run build:js` is the production build AGENTS.md documents. It has to
+    run inside this job, from the install `npm ci` already did, and before the
+    suite - a bundle built after the tests would prove nothing about them.
+    """
+    assert index_of("npm ci") < index_of("npm run build:js")
+    assert index_of("npm run build:js") < index_of("uv run pytest")
+
+    # One install for both builds; a second one would be a slower job saying
+    # the same thing.
+    assert commands().count("npm ci") == 1
+
+
+def test_a_missing_bundle_or_manifest_fails_the_job_and_names_the_command() -> None:
+    text = commands()
+
+    # The path is read out of the settings module the application reads, not
+    # written down again in the workflow - and out of production settings,
+    # because config/settings_test.py points VITE_MANIFEST at a checked-in
+    # fixture that exists whether or not anything was built.
+    assert "import config.settings as settings" in text
+    assert "settings.VITE_MANIFEST" in text
+    # Derived, never a literal: a build output path renamed in vite.config.js
+    # and config/settings.py together must not leave this job checking the old
+    # one and passing.
+    assert "static/board" not in text
+
+    # A manifest naming a bundle that is not there, or an empty file where a
+    # bundle should be, is as broken as no manifest at all.
+    assert 'entry.get("isEntry")' in text
+    assert "1024" in text
+
+    errors = [line for line in text.splitlines() if "::error::" in line]
+    named = [line for line in errors if "npm run build:js" in line]
+    assert len(named) >= 3, errors
+
+
+def test_collectstatic_runs_against_the_built_assets() -> None:
+    """The step that proves the build output is where Django's finders look."""
+    text = commands()
+
+    assert "uv run manage.py collectstatic --noinput" in text
+    assert index_of("npm run build:css") < index_of("uv run manage.py collectstatic --noinput")
+    assert index_of("npm run build:js") < index_of("uv run manage.py collectstatic --noinput")
+
+
+def test_the_bundle_the_suite_reads_is_the_one_this_job_builds() -> None:
+    """Why building it matters: two tests read the real manifest, and skip without it.
+
+    tests/test_island.py guards them on the file `npm run build:js` writes, and
+    a skipped test fails this job. So the build step is not decoration - remove
+    it and the skip gate turns the run red.
+    """
+    island = (BASE_DIR / "tests" / "test_island.py").read_text()
+
+    # The two guards live in #54's file, not this one. What this test owns is
+    # the other half of the bargain: whatever they guard on, this job builds.
+    assert island.count("island not built yet") == 2
+    assert "npm run build:js" in island
+    assert 'BASE_DIR / "static" / settings.VITE_BUILD_SUBDIR' in island
+
+    assert index_of("npm run build:js") < index_of("uv run pytest")
+
+
+def test_node_stays_pinned_to_a_major_version() -> None:
+    text = commands()
+
+    assert 'node-version: "24"' in text
+    # Never `node-version-file` or a floating `lts/*`: the version the build
+    # runs on is a fact of this file.
+    assert "node-version-file" not in text
+    assert "lts/*" not in text
+
+
 def test_ffmpeg_comes_from_the_image_the_dockerfile_uses() -> None:
     text = commands()
 
@@ -319,7 +395,16 @@ def test_agents_md_says_what_ci_runs_and_how_to_reproduce_it() -> None:
     assert "skipped test" in section
     assert "uv run pytest -rs" in section
     assert "npm run build:css" in section
+    # Both builds, in the description and in the command that reproduces a run:
+    # a local run without `npm run build:js` reports two skips, and a skip is a
+    # failure here.
+    assert "npm run build:js" in section
+    assert "collectstatic" in section
     assert ".github/workflows/ci.yml" in section
+
+    reproduce = next(line for line in section.splitlines() if "uv run pytest -rs" in line)
+    for command in ("npm ci", "npm run build:css", "npm run build:js"):
+        assert command in reproduce, reproduce
 
 
 def test_this_file_needs_no_yaml_parser_and_no_new_dependency() -> None:

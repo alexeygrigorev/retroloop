@@ -2,9 +2,9 @@
 #
 # Green here has to mean what green means on a laptop. Two things in this
 # project can turn a broken build into a passing summary line, and this
-# workflow closes both: the stylesheet is built here rather than assumed, and
-# any skipped test fails the job. A run that would read `72 passed, 1 skipped`
-# is red.
+# workflow closes both: both assets - the stylesheet and the React island's
+# bundle - are built here rather than assumed, and any skipped test fails the
+# job. A run that would read `72 passed, 1 skipped` is red.
 name: CI
 
 # Every branch, because engineers push branches and the orchestrator merges
@@ -161,6 +161,67 @@ jobs:
             exit 1
           fi
           echo "$css is $size bytes."
+
+      - name: Build the React island
+        # The second built artefact, and the same rule as the stylesheet above:
+        # a workflow that builds only one of the two assets is green while the
+        # other build is broken, which is the hole this job exists to close.
+        # `npm run build:js` is the production build AGENTS.md documents - one
+        # build path, no dev server (that is #39) - and it reuses the `npm ci`
+        # already done, so no second install step appears here.
+        run: npm run build:js
+
+      - name: Check the bundle and its manifest were built
+        # The manifest path is read out of config/settings.py rather than
+        # written down a second time, so this step checks the very file
+        # retro/templatetags/vite.py will open. Production settings on purpose:
+        # config/settings_test.py points VITE_MANIFEST at a checked-in fixture
+        # so the Python suite runs on a machine with no Node, and a check
+        # against the fixture would pass with nothing built at all.
+        run: |
+          uv run python - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          import config.settings as settings
+
+          manifest = Path(settings.VITE_MANIFEST)
+          if not manifest.is_file():
+              print(f"::error::{manifest} does not exist. 'npm run build:js' did not write the manifest.")
+              sys.exit(1)
+
+          try:
+              entries = json.loads(manifest.read_text())
+          except json.JSONDecodeError as error:
+              print(f"::error::{manifest} is not valid JSON ({error}). 'npm run build:js' wrote a manifest nothing can read.")
+              sys.exit(1)
+
+          bundles = [manifest.parent / entry["file"] for entry in entries.values() if entry.get("isEntry")]
+          if not bundles:
+              print(f"::error::{manifest} names no entry bundle. 'npm run build:js' produced a manifest the page cannot use.")
+              sys.exit(1)
+
+          for bundle in bundles:
+              if not bundle.is_file():
+                  print(f"::error::{bundle}, named by {manifest}, does not exist. 'npm run build:js' did not write the bundle.")
+                  sys.exit(1)
+              size = bundle.stat().st_size
+              # Larger than 1 KB, the same floor the stylesheet check uses: a
+              # build that produced an empty file produced nothing.
+              if size <= 1024:
+                  print(f"::error::{bundle} is only {size} bytes. 'npm run build:js' did not produce a real bundle.")
+                  sys.exit(1)
+              print(f"{bundle} is {size} bytes.")
+          PY
+
+      - name: Collect the static files
+        # What a deployment does with the build output. It is the step that
+        # proves the bundle and the manifest sit where Django's finders look,
+        # not merely somewhere on disk, and it fails loudly on a manifest left
+        # inside Vite's default hidden .vite/ directory, which collectstatic
+        # skips. Production settings again - manage.py defaults to them.
+        run: uv run manage.py collectstatic --noinput
 
       - name: Install ffmpeg and ffprobe
         # The same 8.1 static build the Dockerfile copies from; Debian packages
