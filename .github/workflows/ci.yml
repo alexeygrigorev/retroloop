@@ -270,10 +270,7 @@ jobs:
           # collects the real suite with pytest and asserts this value equals what
           # collection produces, so a value the suite does not actually produce
           # fails the suite itself, one step above this one.
-          # PROOF FOR #72, reverted by the next commit: the number set to a value
-          # that suits a build rather than one the suite produces - the edit QA
-          # made to the floor, which left every workflow test passing.
-          EXPECTED_TESTS: "600"
+          EXPECTED_TESTS: "1387"
         run: |
           python3 - <<'PY'
           import os
