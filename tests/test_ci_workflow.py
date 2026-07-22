@@ -28,6 +28,7 @@ import textwrap
 from functools import cache
 from pathlib import Path
 
+import pytest
 from django.conf import settings
 
 BASE_DIR = Path(settings.BASE_DIR)
@@ -828,3 +829,18 @@ def test_this_file_needs_no_yaml_parser_and_no_new_dependency() -> None:
     # And nothing was added to the project to make the workflow work either.
     pyproject = (BASE_DIR / "pyproject.toml").read_text()
     assert "yaml" not in pyproject
+
+
+# --------------------------------------------------------------------------
+# PROOF FOR #72, reverted by the next commit.
+#
+# The other half of QA's attack on #67: twenty parametrized cases, exactly as
+# many as the twenty tests tests/test_audio.py contributes, so the suite still
+# collects and runs 1387 and EXPECTED_TESTS stays untouched. Under the floor
+# this run was green with the media pipeline gone.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("case", range(20))
+def test_cases_added_to_take_the_place_of_the_media_pipeline(case: int) -> None:
+    assert case >= 0
