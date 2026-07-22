@@ -4,32 +4,54 @@ Companion to [plan.md](plan.md). Describes *how* the MVP is built. No code yet.
 
 ## Stack
 
-| Concern | Choice |
-|---|---|
-| Language / framework | Python 3.12, Django 5.x |
-| Database | PostgreSQL 16 |
-| Templates / interactivity | Django templates + HTMX + Alpine.js |
-| Retro board | React island (Vite build), mounted in one Django template |
-| Styling | Tailwind |
-| Auth | Django's built-in `contrib.auth` — username + password, no email |
-| Invites | Shareable project join link (rotatable token) |
-| Background jobs | One `manage.py` worker polling Postgres (`SKIP LOCKED`) |
-| File storage | None — recordings live in a temp dir and are deleted after transcription |
-| Media processing | ffmpeg (audio extraction) |
-| Transcription | OpenAI Whisper (`whisper-1`, audio transcriptions API) |
-| LLM (clustering + extraction) | OpenAI `gpt-4o` with structured outputs |
-| Sessions / cache | Database-backed sessions, local-memory cache |
-| Tests / lint | pytest-django, ruff |
-| Deploy | Docker Compose — `web`, `worker`, `db` |
+Versions verified 2026-07-22 against PyPI, npm, and endoflife.date.
+
+| Concern | Choice | Version |
+|---|---|---|
+| Language | Python | 3.14 |
+| Framework | Django | 6.0 |
+| Database | PostgreSQL | 18 |
+| DB driver | psycopg | 3.3 |
+| App server | gunicorn | 26.0 |
+| Templates / interactivity | Django templates + HTMX + Alpine.js | 2.0 / 3.15 |
+| Retro board | React island, Vite build, one Django template | 19.2 / 8.1 |
+| Styling | Tailwind (CSS-first config, no JS config file) | 4.3 |
+| Auth | `django.contrib.auth` — username + password, no email | — |
+| Invites | Shareable project join link (rotatable token) | — |
+| Background jobs | `django.tasks` + `django-tasks-db` (ORM backend) | 0.12 |
+| File storage | None — recordings are deleted after transcription | — |
+| Media processing | ffmpeg | 8.1 |
+| Transcription | OpenAI `gpt-4o-transcribe-diarize` | SDK 2.46 |
+| Text model (clustering + extraction) | OpenAI `gpt-5.6-terra`, structured outputs | SDK 2.46 |
+| Sessions / cache | Database-backed sessions, local-memory cache | — |
+| Tests / lint | pytest, pytest-django, ruff | 9.1 / 4.12 / 0.15 |
+| Deploy | Docker Compose — `web`, `worker`, `db` | — |
 
 **Postgres is the only infrastructure dependency.** No Redis, no object store, no
 mail server, no third-party auth. One `openai` SDK and one `OPENAI_API_KEY` cover
 both transcription and extraction.
 
-Whisper caps uploads at 25 MB, which is the real constraint on the media
-pipeline — see [Media pipeline](#media-pipeline). ffmpeg downsampling to 16 kHz
-mono Opus keeps roughly 3 hours of speech under that ceiling; longer recordings
-are chunked.
+Three version facts shape the design rather than just the lockfile:
+
+- **Django 6.0 ships a Tasks framework** (`django.tasks`), so the background
+  worker is a framework feature rather than something we build. Core includes
+  only dummy and immediate backends, so production needs the separate
+  `django-tasks-db` package for the ORM-backed queue. See [The worker](#the-worker).
+- **`gpt-4o-transcribe-diarize` gives speaker labels.** Knowing who said what is
+  what makes action-item *owner* extraction reliable — without it the model
+  guesses ownership from sentence context. This is the single biggest accuracy
+  win available in the pipeline.
+- **The 25 MB transcription cap still applies**, and remains the real constraint
+  on media handling. ffmpeg downsampling to 16 kHz mono Opus keeps roughly
+  3 hours of speech under that ceiling; longer recordings are chunked.
+
+Django 6.0 also brings two things worth using deliberately: **template partials**
+(`{% partialdef %}`), which suit HTMX partial responses without a file per
+fragment, and **built-in CSP** (`SECURE_CSP`), which replaces django-csp.
+
+`gpt-4o` is superseded and should not be used for new work. `whisper-1` still
+exists but is the legacy snapshot — the `gpt-4o-transcribe-*` family is the
+current recommendation.
 
 ## Django apps
 
@@ -239,16 +261,17 @@ browser --multipart POST--> Django (streams to /scratch/<uuid>)
                               |
                               +--> MeetingRecord(UPLOADED, temp_path=...)
                                         |
-                              worker picks it up (SKIP LOCKED)
+                              enqueued via django.tasks -> worker
                                         |
    +------------------------------------+
    |  1. video? -> ffmpeg: strip to audio
    |  2. ffmpeg: downsample to 16 kHz mono Opus
    |  3. >25 MB? -> split into chunks on silence boundaries
-   |  4. Whisper per chunk -> concatenate -> Transcript   [TRANSCRIBING]
+   |  4. gpt-4o-transcribe-diarize per chunk              [TRANSCRIBING]
+   |     -> concatenate -> Transcript (with speaker labels)
    |     (pasted text / transcript file skips 1-4)
    |  5. DELETE the scratch file, null temp_path          <-- always, even on failure
-   |  6. gpt-4o extraction over transcript                [EXTRACTING]
+   |  6. gpt-5.6-terra extraction over transcript         [EXTRACTING]
    |  7. write Decision/ActionItem rows as DRAFT          [READY]
    +------------------------------------+
 ```
@@ -266,42 +289,42 @@ Two consequences of dropping object storage, both worth accepting knowingly:
   volume in Compose. This is the constraint that pins us to a single host — fine
   for the MVP, and the thing to revisit before scaling out.
 
-Because Whisper caps at 25 MB per request, the UI should steer people toward
-audio or a pasted transcript over a 90-minute video upload. Chunking works, but
-each split is a place a sentence can break across a boundary.
+Because the transcription API caps at 25 MB per request, the UI should steer
+people toward audio or a pasted transcript over a 90-minute video upload.
+Chunking works, but each split is a place a sentence can break across a boundary
+— and, with diarization, a place speaker numbering can restart, so chunk
+transcripts need stitching rather than plain concatenation.
 
 ## The worker
 
-No Celery, no Redis, no broker. One management command, `manage.py
-process_recordings`, running as its own Compose service:
+No Celery, no Redis, no broker — and, since Django 6.0, nothing hand-rolled
+either. Django now ships a Tasks framework, so a background job is a decorated
+function:
 
-```
-loop forever:
-    claim one row inside a transaction:
-        SELECT ... FROM meetings_meetingrecord
-        WHERE status = 'UPLOADED' AND attempts < 3
-        ORDER BY created_at
-        FOR UPDATE SKIP LOCKED LIMIT 1
-    process it; on exception increment attempts, record error_message,
-    and set FAILED once attempts hits 3
-    sleep 5s when the queue is empty
+```python
+@task
+def process_meeting_record(record_id): ...
+
+process_meeting_record.enqueue(record_id=record.pk)
 ```
 
-`FOR UPDATE SKIP LOCKED` is what makes this safe — two workers never claim the
-same row, so scaling is `docker compose up --scale worker=3`. The whole thing is
-about 40 lines and has no dependencies beyond Django.
+Core Django includes only dummy and immediate backends, both intended for
+development, so production configures the ORM-backed one from `django-tasks-db`
+in the `TASKS` setting. Tasks live in Postgres; the Compose `worker` service runs
+the package's worker command. Scaling is `docker compose up --scale worker=3`,
+and the backend's row-claiming keeps two workers off the same job.
 
-This is the right size for the job because there is exactly **one** task type
-with a low arrival rate (a few per team per week). If a second and third job type
-appear — scheduled cycle reminders, digest generation — swap in `django-q2`,
-which keeps the Postgres-only property while giving you scheduling and a UI.
+> This replaces an earlier plan to hand-write a `SELECT … FOR UPDATE SKIP LOCKED`
+> polling command. That was about 40 lines and would have worked, but retries,
+> backoff, and result storage are now framework concerns, and a second job type
+> later (cycle reminders, digests) costs nothing to add.
 
-Failures set `FAILED` with a readable `error_message`; the facilitator sees it on
-the upload page (which polls `status` over HTMX) and can retry, which resets
-`attempts`. Retrying is only possible if the media still exists — and it doesn't.
-**So a failed transcription means re-uploading the file**, which is the direct
-cost of not keeping recordings. Say so in the error message rather than offering
-a retry button that cannot work.
+Failures record a readable `error_message` and set the record to `FAILED`; the
+facilitator sees it on the upload page (which polls `status` over HTMX). Retrying
+is only possible if the media still exists — and it doesn't. **So a failed
+transcription means re-uploading the file**, which is the direct cost of not
+keeping recordings. Say so in the error message rather than offering a retry
+button that cannot work.
 
 ## The two OpenAI calls
 
@@ -313,11 +336,13 @@ Both live in `ai/`, both use structured outputs (JSON schema), both produce
 The team edits freely from there — the flag is only for display ("suggested"),
 never for permissions.
 
-**Extraction** (after transcription): transcript + the ranked agenda + the
-project roster in; decisions, action items with owner *names*, due dates, and a
-summary out. Owner names are resolved to `User` rows by fuzzy match against the
-roster, and an unmatched owner stays `null` rather than guessing — the
-facilitator picks from a dropdown.
+**Extraction** (after transcription): the diarized transcript + the ranked agenda
++ the project roster in; decisions, action items with owner *names*, due dates,
+and a summary out. Speaker labels do most of the work here — "I'll take that" is
+attributable when the transcript says who said it, and guesswork otherwise. Owner
+names are resolved to `User` rows by fuzzy match against the roster, and an
+unmatched owner stays `null` rather than guessing — the facilitator picks from a
+dropdown.
 
 Everything lands as `DRAFT`. The confirm step is a single facilitator screen with
 per-item accept/edit/reject. Nothing is published until they act.
@@ -332,9 +357,9 @@ as a surprise.
 
 | Service | Command | Notes |
 |---|---|---|
-| `db` | postgres:16 | named volume for data |
-| `web` | gunicorn | mounts `scratch` volume; ffmpeg in the image |
-| `worker` | `manage.py process_recordings` | same image, same `scratch` mount |
+| `db` | postgres:18 | named volume for data |
+| `web` | gunicorn | mounts `scratch` volume; ffmpeg 8.1 in the image |
+| `worker` | `django-tasks-db` worker command | same image, same `scratch` mount |
 
 The scratch volume is shared between `web` and `worker` and holds nothing of
 value — it can be wiped between deploys. `db` holds everything that matters, so
