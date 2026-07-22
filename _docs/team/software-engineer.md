@@ -17,8 +17,12 @@ tells you where it is.
 
 - Everything you do happens inside that directory. Other worktrees and
   the main checkout are read-only to you
-- Commit to your branch. Do not merge, do not rebase onto main, do not
-  push, do not touch another branch
+- Commit to your branch, and push that branch - `git push -u origin
+  issue-<n>` on the first commit, `git push` after that. Push as you go,
+  not once at the end: work nobody can see is work nobody can review, and
+  from the outside it is indistinguishable from a stalled session
+- Push your own branch and nothing else. Do not merge, do not rebase onto
+  main, do not push main, do not touch another branch
 - Other issues are being built at the same time. If a file you need does
   not exist yet, it belongs to an issue that has not merged - build
   against what the issue tells you to assume, not against their branch

@@ -141,12 +141,22 @@ Branches merge one at a time, never in parallel, in dependency order:
 2. Run the whole suite, the linter, and `makemigrations --check` again,
    in the worktree, after the rebase
 3. Merge to main only if all three are clean
-4. Close the issue
-5. Rebase every still-open branch in the wave onto the new main
+4. Push main
+5. Close the issue
+6. Rebase every still-open branch in the wave onto the new main
 
-Step 5 is what keeps the wave honest. The second branch to merge is
+Step 6 is what keeps the wave honest. The second branch to merge is
 being tested against code its author never saw, so it re-runs against
 the merged result before it is trusted.
+
+Step 4 is not bookkeeping. A local commit is invisible: the person whose
+project this is opens GitHub, sees nothing, and has no way to tell a
+working session from a stalled one. Push main as soon as it moves.
+
+Engineers push their own branch too, as soon as it has a commit on it,
+and again after each round of QA fixes. A branch nobody can see is a
+branch nobody can review, and the whole wave's work is otherwise
+invisible until it merges.
 
 Conflicts concentrate in a few shared files - `config/settings.py`,
 `config/urls.py`, `AGENTS.md`, `.env.example`, `templates/base.html`.
