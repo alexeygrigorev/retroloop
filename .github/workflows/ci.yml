@@ -1,0 +1,214 @@
+# The checks a human runs before merging, on every push.
+#
+# Green here has to mean what green means on a laptop. Two things in this
+# project can turn a broken build into a passing summary line, and this
+# workflow closes both: the stylesheet is built here rather than assumed, and
+# any skipped test fails the job. A run that would read `72 passed, 1 skipped`
+# is red.
+name: CI
+
+# Every branch, because engineers push branches and the orchestrator merges
+# locally: a workflow that only fired on main would tell an engineer nothing
+# until after the merge. The pull_request trigger is there for the day a
+# contribution arrives as a PR; the duplicate run is accepted and concurrency
+# keeps the cost down. No paths filter - several tests read AGENTS.md,
+# README.md, package.json and .gitignore as fixtures, so a documentation-only
+# commit can and does break the suite.
+on:
+  push:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Read-only. Nothing here publishes, comments or uploads.
+permissions:
+  contents: read
+
+# A newer push to the same ref cancels the run it supersedes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: lint, migrations, assets, suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      # The same image as compose.yaml, as a service container rather than
+      # Compose: bringing up Compose would build the application image - the
+      # static-ffmpeg copy, the whole dependency layer - purely to obtain a
+      # database, and the web and worker services are not wanted in a test job.
+      # compose.yaml's max_connections=300 is deliberately not copied. It is
+      # there because one container serves every developer worktree at once;
+      # this job runs one suite alone and the postgres:18 default of 100 is
+      # ample.
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: feedback_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d feedback_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      # A real environment variable, and no dotenv file anywhere in this job.
+      # config/settings.py seeds os.environ with setdefault, so a real variable
+      # wins by design - that is the production path, and CI travels it rather
+      # than fabricating a file. The database is deliberately feedback_ci and
+      # not feedback: the fallback baked into config/settings.py ends in
+      # /feedback, so the settings line logged below is proof the variable
+      # arrived rather than a coincidence that matches the default.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/feedback_ci
+      # `manage.py makemigrations --check` loads production settings, which
+      # refuse to start without a key while DEBUG is off. The same visibly-fake
+      # value compose.yaml uses; a throwaway that never leaves the runner, not a
+      # new setting and not a credential.
+      DEBUG: "false"
+      SECRET_KEY: django-insecure-development-only-key
+      ALLOWED_HOSTS: localhost,127.0.0.1,testserver
+      # Every `uv run` below works from the committed lock file instead of
+      # re-resolving against the index, the rule the Dockerfile already applies.
+      UV_FROZEN: "1"
+      # Written outside the checkout so the suite's own walks over the working
+      # tree never see it.
+      JUNIT_REPORT: ${{ github.workspace }}/../junit.xml
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python dependencies
+        # --locked, never a bare `uv sync`: the lock file has to already agree
+        # with pyproject.toml, and a drifted lock fails here instead of being
+        # silently repaired. UV_FROZEN is 0 for this one step because uv refuses
+        # --locked while UV_FROZEN is set - the two mean opposite things, and
+        # the check is what is wanted at install time. The job-level UV_FROZEN=1
+        # governs every `uv run` after it.
+        env:
+          UV_FROZEN: "0"
+        run: uv sync --locked
+
+      - name: Log the Python version
+        # requires-python pins ==3.14.*; uv installs the interpreter that
+        # satisfies it.
+        run: |
+          uv run python -c "import sys; print(sys.version)"
+          uv run python -c "import sys; assert sys.version.startswith('3.14.'), sys.version"
+
+      - name: Log the database the settings resolved to
+        # Must print feedback_ci. Anything else - feedback in particular - means
+        # DATABASE_URL never reached Django and the suite is running on a
+        # default it did not choose.
+        run: uv run python -c "import config.settings_test as s; print(s.DATABASES['default']['NAME'])"
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format check
+        run: uv run ruff format --check .
+
+      - name: Missing migration check
+        # A model change with no migration is a FAIL during human QA on this
+        # project. Run against production settings on purpose: it also proves
+        # config/settings.py still imports.
+        run: uv run manage.py makemigrations --check --dry-run
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build the stylesheet
+        # The workflow builds the assets itself. It does not rely on a test
+        # fixture to do it, because building assets is the workflow's job and
+        # must not be a side effect that a later refactor can remove.
+        run: npm run build:css
+
+      - name: Check the stylesheet was built
+        run: |
+          css=static/css/app.css
+          if [ ! -f "$css" ]; then
+            echo "::error::$css does not exist. 'npm run build:css' did not produce the stylesheet."
+            exit 1
+          fi
+          size=$(stat -c %s "$css")
+          if [ "$size" -le 1024 ]; then
+            echo "::error::$css is only $size bytes. 'npm run build:css' did not produce a real stylesheet."
+            exit 1
+          fi
+          echo "$css is $size bytes."
+
+      - name: Install ffmpeg and ffprobe
+        # The same 8.1 static build the Dockerfile copies from; Debian packages
+        # 7.1. tests/test_audio.py carries a module-level skipif on these two
+        # binaries, so without them nineteen tests - the whole media pipeline -
+        # disappear from the run and the summary still reads green.
+        run: |
+          docker create --name static-ffmpeg mwader/static-ffmpeg:8.1 /ffmpeg
+          sudo docker cp static-ffmpeg:/ffmpeg /usr/local/bin/ffmpeg
+          sudo docker cp static-ffmpeg:/ffprobe /usr/local/bin/ffprobe
+
+      - name: Log the ffmpeg version
+        # Both have to answer from PATH, under the names the pipeline calls.
+        run: |
+          command -v ffmpeg
+          command -v ffprobe
+          ffmpeg -version
+          ffprobe -version
+
+      - name: Run the test suite
+        # -rs so the log names every skip and its reason, and a JUnit report for
+        # the gate below.
+        run: uv run pytest -rs --junitxml="$JUNIT_REPORT"
+
+      - name: Fail if any test was skipped
+        # A skipped test is a failed test here. Both of this project's silent
+        # opt-outs - the collectstatic test and all of tests/test_audio.py -
+        # vanish from a naive run and leave the summary line green, which is the
+        # failure this workflow exists to close. A test that genuinely has to
+        # skip changes this gate in the same commit, with the reason written
+        # here. The report is parsed with the standard library; no parser is
+        # installed for it.
+        run: |
+          python3 - <<'PY'
+          import os
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path(os.environ["JUNIT_REPORT"])
+          if not report.is_file():
+              sys.exit(f"::error::{report} is missing - pytest wrote no report.")
+
+          skipped = [
+              (
+                  "{}::{}".format(case.get("classname", ""), case.get("name", "")),
+                  skip.get("message", ""),
+              )
+              for case in ET.parse(report).iter("testcase")
+              for skip in case.findall("skipped")
+          ]
+          if skipped:
+              print(f"::error::{len(skipped)} test(s) skipped. A skipped test fails CI.")
+              for node, reason in skipped:
+                  print(f"  skipped: {node} - {reason}")
+              sys.exit(1)
+
+          print("No test skipped.")
+          PY
