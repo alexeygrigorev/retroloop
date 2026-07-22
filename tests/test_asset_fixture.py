@@ -15,8 +15,10 @@ no Node at all) can each be provoked on any machine, including one where the
 real build happens to work.
 """
 
+import os
 import re
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -38,6 +40,21 @@ def completed(returncode: int, output: str = "") -> subprocess.CompletedProcess[
     return subprocess.CompletedProcess(
         args=["npm", "run", "build:css"], returncode=returncode, stdout=output, stderr=""
     )
+
+
+EARLIER_BUILD = "/* written by an earlier build */"
+
+# A timestamp from well before this test run. A file left by yesterday's build is
+# the state these tests are about, and stamping it explicitly keeps them off the
+# filesystem clock: nothing here depends on how finely mtimes are recorded, or on
+# how quickly the fake build runs.
+EARLIER = 1_700_000_000_000_000_000
+
+
+def from_an_earlier_build(path: Path, content: str = EARLIER_BUILD) -> None:
+    """Leave `path` looking exactly like output of a build that ran long ago."""
+    path.write_text(content)
+    os.utime(path, ns=(EARLIER, EARLIER))
 
 
 @pytest.fixture
@@ -154,15 +171,16 @@ def test_the_fixture_builds_the_artefact_rather_than_expecting_a_developer_to(
     assert runs == [(missing, "/usr/bin/npm")]
 
 
-def test_a_stale_artefact_is_rebuilt_rather_than_trusted(
+def test_the_build_runs_even_when_the_artefact_is_already_present(
     missing: Artefact, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Presence is not proof: an old file from a build path that no longer exists."""
-    missing.path.write_text("/* stale */")
+    """Presence is not a reason to skip the build. Whether it is *proof* is below."""
+    from_an_earlier_build(missing.path)
     runs = []
 
     def build(artefact: Artefact, npm: str) -> subprocess.CompletedProcess[str]:
         runs.append(npm)
+        artefact.path.write_text("/* built now */")
         return completed(0)
 
     monkeypatch.setattr(assets, "npm_executable", lambda: "/usr/bin/npm")
@@ -171,6 +189,165 @@ def test_a_stale_artefact_is_rebuilt_rather_than_trusted(
     ensure_built(missing)
 
     assert runs == ["/usr/bin/npm"]
+
+
+# --------------------------------------------------------------------------
+# A stale artefact is not evidence of a build
+# --------------------------------------------------------------------------
+
+
+def test_a_build_that_writes_somewhere_else_leaves_the_stale_artefact_red(
+    missing: Artefact, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QA's case: `--output` changed, the build exits 0, the orphan stays behind.
+
+    The harm #54's "Why it matters later" names. Nothing about the run is
+    unusual - the build succeeds, the file is there - except that the file is
+    not what this build wrote.
+    """
+    from_an_earlier_build(missing.path)
+    renamed = missing.path.with_name("app.RENAMED.css")
+
+    def build(artefact: Artefact, npm: str) -> subprocess.CompletedProcess[str]:
+        renamed.write_text("/* the output path moved; the build went here */")
+        return completed(0)
+
+    monkeypatch.setattr(assets, "npm_executable", lambda: "/usr/bin/npm")
+    monkeypatch.setattr(assets, "run_build", build)
+
+    with pytest.raises(pytest.fail.Exception) as failure:
+        ensure_built(missing)
+
+    assert "npm run build:css" in str(failure.value)
+    assert "earlier build" in str(failure.value)
+    assert missing.path.read_text() == EARLIER_BUILD, "the stale file was read, not rewritten"
+
+
+def test_a_build_that_exits_zero_and_touches_nothing_leaves_the_artefact_red(
+    missing: Artefact, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from_an_earlier_build(missing.path)
+
+    monkeypatch.setattr(assets, "npm_executable", lambda: "/usr/bin/npm")
+    monkeypatch.setattr(assets, "run_build", lambda artefact, npm: completed(0))
+
+    with pytest.raises(pytest.fail.Exception) as failure:
+        ensure_built(missing)
+
+    assert "npm run build:css" in str(failure.value)
+
+
+def test_a_rebuild_that_writes_byte_identical_output_is_not_red(
+    missing: Artefact, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The check may not lean on the bytes changing: a build is meant to be reproducible.
+
+    Twice in a row from unchanged sources - which is what every second CI run
+    and every second local run is - the build writes exactly what is already
+    there, and that has to stay green.
+    """
+    from_an_earlier_build(missing.path)
+
+    def build(artefact: Artefact, npm: str) -> subprocess.CompletedProcess[str]:
+        artefact.path.write_text(EARLIER_BUILD)
+        return completed(0)
+
+    monkeypatch.setattr(assets, "npm_executable", lambda: "/usr/bin/npm")
+    monkeypatch.setattr(assets, "run_build", build)
+
+    assert ensure_built(missing) == missing.path
+    assert missing.path.read_text() == EARLIER_BUILD
+
+
+# --------------------------------------------------------------------------
+# A stub is not a build either
+# --------------------------------------------------------------------------
+
+
+def test_a_stub_written_where_the_stylesheet_belongs_is_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fresh, and still not a stylesheet. The floor is CI's own: 1 KB."""
+    artefact = replace(STYLESHEET, path=tmp_path / "app.css")
+
+    def build(built: Artefact, npm: str) -> subprocess.CompletedProcess[str]:
+        built.path.write_text("/* stub */")
+        return completed(0)
+
+    monkeypatch.setattr(assets, "npm_executable", lambda: "/usr/bin/npm")
+    monkeypatch.setattr(assets, "run_build", build)
+
+    with pytest.raises(pytest.fail.Exception) as failure:
+        ensure_built(artefact)
+
+    assert "npm run build:css" in str(failure.value)
+    assert "bytes" in str(failure.value)
+
+
+def test_a_stub_manifest_that_names_no_bundle_is_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artefact = replace(ISLAND, path=tmp_path / "manifest.json")
+
+    def build(built: Artefact, npm: str) -> subprocess.CompletedProcess[str]:
+        built.path.write_text("{}")
+        return completed(0)
+
+    monkeypatch.setattr(assets, "npm_executable", lambda: "/usr/bin/npm")
+    monkeypatch.setattr(assets, "run_build", build)
+
+    with pytest.raises(pytest.fail.Exception) as failure:
+        ensure_built(artefact)
+
+    assert "npm run build:js" in str(failure.value)
+
+
+def test_a_manifest_naming_a_bundle_that_is_not_there_is_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The manifest is a promise about a file; an unkept one is a broken build."""
+    artefact = replace(ISLAND, path=tmp_path / "manifest.json")
+
+    def build(built: Artefact, npm: str) -> subprocess.CompletedProcess[str]:
+        built.path.write_text(
+            '{"assets/js/board.jsx": {"file": "assets/board-Deadbeef.js", "isEntry": true}}'
+        )
+        return completed(0)
+
+    monkeypatch.setattr(assets, "npm_executable", lambda: "/usr/bin/npm")
+    monkeypatch.setattr(assets, "run_build", build)
+
+    with pytest.raises(pytest.fail.Exception) as failure:
+        ensure_built(artefact)
+
+    assert "board-Deadbeef.js" in str(failure.value)
+    assert "npm run build:js" in str(failure.value)
+
+
+def test_a_manifest_nothing_can_read_is_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artefact = replace(ISLAND, path=tmp_path / "manifest.json")
+
+    def build(built: Artefact, npm: str) -> subprocess.CompletedProcess[str]:
+        built.path.write_text("not json at all")
+        return completed(0)
+
+    monkeypatch.setattr(assets, "npm_executable", lambda: "/usr/bin/npm")
+    monkeypatch.setattr(assets, "run_build", build)
+
+    with pytest.raises(pytest.fail.Exception) as failure:
+        ensure_built(artefact)
+
+    assert "npm run build:js" in str(failure.value)
+
+
+def test_what_the_real_builds_produce_satisfies_those_checks(
+    built_stylesheet: Path, built_island: Path
+) -> None:
+    """The checks above are worth nothing if the real output does not pass them."""
+    assert STYLESHEET.verify(built_stylesheet) is None
+    assert ISLAND.verify(built_island) is None
 
 
 def test_each_artefact_is_built_once_per_session() -> None:

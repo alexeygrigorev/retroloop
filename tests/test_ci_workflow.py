@@ -297,16 +297,17 @@ def test_collectstatic_runs_against_the_built_assets() -> None:
 
 
 def test_the_bundle_the_suite_reads_is_the_one_this_job_builds() -> None:
-    """Why building it matters: two tests read the real manifest, and skip without it.
+    """Why building it matters: two tests read the real manifest, not the fixture.
 
-    tests/test_island.py guards them on the file `npm run build:js` writes, and
-    a skipped test fails this job. So the build step is not decoration - remove
-    it and the skip gate turns the run red.
+    They take the `built_island` fixture, which builds the island and fails -
+    never skips - when the build does not produce the file (#54). So the build
+    step is not decoration: it is the same artefact, produced by the same
+    command, that those two tests refuse to run without.
     """
     island = (BASE_DIR / "tests" / "test_island.py").read_text()
 
-    # The two guards live in #54's file, not this one. What this test owns is
-    # the other half of the bargain: whatever they guard on, this job builds.
+    # The fixture lives in #54's files, not this one. What this test owns is the
+    # other half of the bargain: whatever those tests depend on, this job builds.
     assert island.count("built_island: Path") == 2
     assert "npm run build:js" in island
     assert 'BASE_DIR / "static" / settings.VITE_BUILD_SUBDIR' in island
