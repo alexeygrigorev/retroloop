@@ -28,18 +28,22 @@
       This link is the only thing anyone needs in order to join this project, so
       share it only with the people who belong here.
     </p>
+    <p>
+      Replacing the link breaks every copy already shared — old links stop
+      working for everyone, and people already in the project stay in it.
+    </p>
 
     {% if can_rotate %}
-      {# The button is hidden from a plain member as a courtesy; the view is
-         what refuses them. #}
+      {% comment %}
+        The button is hidden from a plain member as a courtesy; the view is what
+        refuses them. `{% comment %}` spans lines, which `{# #}` does not: the
+        lexer matches `{#.*?#}` without DOTALL, so a two-line `{# #}` is not a
+        comment at all and renders as page text.
+      {% endcomment %}
       <form method="post" action="{% url 'project-rotate-link' project.pk %}">
         {% csrf_token %}
         <button type="submit">Replace the join link</button>
       </form>
-      <p>
-        Replacing the link breaks every copy already shared — old links stop
-        working for everyone, and people already in the project stay in it.
-      </p>
     {% endif %}
 
     <p><a href="{% url 'project-list' %}">Back to your projects</a></p>

@@ -612,15 +612,80 @@ def test_rotation_needs_a_csrf_token(project: Project, owner: User) -> None:
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize("viewer", ["owner", "member"], ids=["facilitator", "plain-member"])
 def test_the_page_says_what_the_link_is_and_what_rotating_it_does(
-    client: Client, project: Project, owner: User
+    client: Client, project: Project, owner: User, member: User, viewer: str
 ) -> None:
-    log_in(client, owner)
+    """Both sentences are addressed to everyone on the project, not only to
+    the people who can press the button."""
+    log_in(client, owner if viewer == "owner" else member)
 
     body = client.get(project.get_absolute_url()).content.decode().lower()
 
     assert "only thing anyone needs in order to join" in body
     assert "breaks every copy already shared" in body
+
+
+# --------------------------------------------------------------------------
+# Rendering
+# --------------------------------------------------------------------------
+
+# The templates this branch adds or changes. `templates/home.html` is left out
+# on purpose: it belongs to #3, which is fixing its own comment leak on main.
+BRANCH_TEMPLATES = frozenset(
+    {
+        "projects/project_list.html",
+        "projects/project_form.html",
+        "projects/project_detail.html",
+        "accounts/signup.html",
+        "registration/login.html",
+    }
+)
+
+
+@pytest.mark.django_db
+def test_no_template_comment_leaks_into_a_rendered_page(
+    project: Project, owner: User, member: User
+) -> None:
+    """A `{# ... #}` comment split over two lines is not a comment.
+
+    Django's lexer matches `{#.*?#}` without DOTALL, so a comment that spans
+    lines is never tokenized as one and its source is emitted as page text.
+    Reading the template does not show this; only rendering does. Asserting
+    that a string is present would not catch it either, which is why this
+    asserts an absence, over every template the branch owns.
+    """
+    anonymous = Client()
+    facilitator_client = Client()
+    log_in(facilitator_client, owner)
+    member_client = Client()
+    log_in(member_client, member)
+
+    pages = [
+        (anonymous, LOGIN_URL),
+        (anonymous, SIGNUP_URL),
+        (facilitator_client, PROJECT_LIST_URL),
+        (facilitator_client, PROJECT_CREATE_URL),
+        # Both sides of `{% if can_rotate %}`: the defect that prompted this
+        # test was inside the branch only a facilitator renders.
+        (facilitator_client, project.get_absolute_url()),
+        (member_client, project.get_absolute_url()),
+    ]
+
+    rendered: set[str] = set()
+    for page_client, url in pages:
+        response = page_client.get(url)
+        body = response.content.decode()
+
+        assert response.status_code == 200, url
+        assert "{#" not in body, f"template comment source leaked into {url}"
+        assert "#}" not in body, f"template comment source leaked into {url}"
+        assert "{%" not in body, f"template tag source leaked into {url}"
+        rendered.update(template.name for template in response.templates if template.name)
+
+    # The assertions above are only worth as much as their coverage, so prove
+    # that every template the branch owns was actually one of the ones rendered.
+    assert BRANCH_TEMPLATES <= rendered
 
 
 @pytest.mark.django_db
