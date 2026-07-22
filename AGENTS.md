@@ -48,6 +48,22 @@ Rules
   attribute set in Python. A new colour is added to the `@theme` block, never
   written inline. `assets/css/app.css` is the one file to open to see what
   already exists; there is no second document to keep in sync.
+- URLs in a template: the plain `{% url 'name' arg %}` tag, written straight
+  into the attribute, and never the `{% url ... as var %}` form. `as var`
+  swallows the `NoReverseMatch` a wrong or renamed route name raises and leaves
+  the variable empty, so the page comes back 200 with `hx-get=""` and a button
+  that silently does nothing - #62, found by breaking a route name and watching
+  the suite stay green. The plain tag raises instead, which is the whole point.
+  A partial is rendered on its own by the sweeps in `tests/template_render.py`
+  as well as by its view, so a tag inside one still has a card or a cycle to
+  reverse against: both scenes are built in that one module, and a new partial
+  adds whatever it needs to them there. Never reach for `as var` to work round
+  a context a test does not supply. A URL that cannot come from `{% url %}` -
+  one a view computed - is passed in as context, and the template is then
+  responsible for nothing. `tests/test_template_urls.py` enforces it by walking
+  `templates/`: every `{% url %}` name must be a route that exists and take the
+  arguments the tag passes, and no rendered page or fragment may emit an empty
+  `href`, `action` or `hx-*` attribute.
 - Tailwind is configured CSS-first in `assets/css/app.css`; there is no
   `tailwind.config.js`. htmx and Alpine are vendored in `static/vendor/` at
   pinned versions, never loaded from a CDN. Node is a build-time tool only, so

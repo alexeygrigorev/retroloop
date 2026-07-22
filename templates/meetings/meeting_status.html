@@ -8,8 +8,10 @@
   or FAILED — which is how the polling stops: the last fragment to arrive is
   the one that does not ask again.
 
-  `status_url` comes from the view rather than from `{% url %}`, because this
-  file is also rendered on its own with no record in the context.
+  The address it polls is reversed here, with the plain `{% url %}` tag. It sits
+  inside the `{% if polling %}`, which is only ever true when there is a record,
+  so the tag always has a pk — and a renamed route raises instead of rendering
+  `hx-get=""`, which is a fragment that stops polling and says nothing (#62).
 {% endcomment %}
 <div
   id="meeting-status"
@@ -17,7 +19,7 @@
   data-meeting-record="{{ record.pk }}"
   data-polling="{% if polling %}true{% else %}false{% endif %}"
   {% if polling %}
-    hx-get="{{ status_url }}"
+    hx-get="{% url 'meeting-record-status' record.pk %}"
     hx-trigger="every 3s"
     hx-swap="outerHTML"
   {% endif %}
