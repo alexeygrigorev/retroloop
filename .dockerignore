@@ -1,0 +1,10 @@
+.venv/
+.git/
+.gitignore
+__pycache__/
+*.pyc
+staticfiles/
+scratch/
+.env
+.pytest_cache/
+.ruff_cache/

@@ -36,6 +36,17 @@ the database. A recoverable link is not anonymity, it is a delay.
 Cost accepted: participation is countable but never attributable, and abuse of
 anonymity cannot be traced. For an internal team tool that is the right trade.
 
+## 3a. Participation is reported as a yes or no, not as a count per person
+
+`CycleParticipation.card_count` is stored, because it is useful for aggregates,
+but no screen shows one member's count next to their name. The summary shows
+who submitted and who did not, plus team-wide totals.
+
+Why: counts leak by arithmetic. In a team of six where one person submitted a
+single card and exactly one anonymous card exists, the count identifies the
+author as surely as a name would. Decision 3 is only worth anything if the
+numbers around it cannot undo it.
+
 ## 4. A cycle closes on the facilitator's schedule, not on full attendance
 
 The facilitator can close a cycle and start the retrospective whenever they
