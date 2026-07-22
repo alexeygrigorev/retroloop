@@ -97,9 +97,15 @@ CI
 
 `.github/workflows/ci.yml` runs on every push to any branch, on pull requests
 targeting `main`, and on demand. One job: `uv sync --locked`, both ruff checks,
-`makemigrations --check --dry-run`, `npm ci` and `npm run build:css`, then the
-whole suite against a `postgres:18` service container. It builds the stylesheet
-and installs ffmpeg itself, so nothing the suite needs is assumed to be there.
+`makemigrations --check --dry-run`, `npm ci`, `npm run build:css` and
+`npm run build:js`, `collectstatic`, then the whole suite against a
+`postgres:18` service container. It builds both assets and installs ffmpeg
+itself, so nothing the suite needs is assumed to be there.
+
+- Both builds are checked, not trusted: a step after each one asserts the output
+  exists and fails naming the command that should have written it. The bundle's
+  path comes from `config/settings.py`, so it is the file the template tag
+  reads, and `collectstatic` then proves Django's finders see both.
 
 - A skipped test fails the build. The suite writes a JUnit report and a step
   after it fails the job when any test skipped, printing the node id and the
@@ -110,5 +116,8 @@ and installs ffmpeg itself, so nothing the suite needs is assumed to be there.
 - A newer push to the same branch cancels the run it supersedes, so the run
   worth reading is always the one for the tip commit.
 - Reproduce a CI run locally with one command:
-  `uv sync --locked && npm ci && npm run build:css && uv run ruff check . && uv run ruff format --check . && uv run manage.py makemigrations --check --dry-run && uv run pytest -rs`
+  `uv sync --locked && npm ci && npm run build:css && npm run build:js && uv run ruff check . && uv run ruff format --check . && uv run manage.py makemigrations --check --dry-run && uv run pytest -rs`
   The `-rs` is the point: it lists every skip, which CI turns into a failure.
+  `npm run build:js` is part of it for the same reason: two tests read the real
+  manifest and skip without it, so a local run that omits the build reports two
+  skips that CI counts as failures.
