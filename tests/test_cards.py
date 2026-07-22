@@ -28,14 +28,17 @@ from pathlib import Path
 import pytest
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.db import IntegrityError, migrations, transaction
+from django.db import IntegrityError, connection, migrations, transaction
 from django.db.migrations.loader import MigrationLoader
 from django.test import Client
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
+from cycles import views as cycles_views
 from cycles.models import CARD_TEXT_MAX_LENGTH, Card, FeedbackCycle
 from projects.models import Membership, Project
 from projects.permissions import can_add_card, can_delete_card, can_edit_card, can_view_card
+from tests.template_render import template_sources
 
 User = get_user_model()
 
@@ -947,6 +950,212 @@ def test_a_closed_cycle_with_no_cards_says_that_instead_of_offering_a_form(
 
     assert "You did not add any cards to this cycle" in html
     assert "<textarea" not in html
+
+
+# --------------------------------------------------------------------------
+# One window, written once
+#
+# Issue #66. The card partial used to hide Edit and Delete on
+# `cycle.accepts_cards` — the status half of `can_edit_card`, written a second
+# time in a template with nothing pinning the two together. The controls now
+# come from per-card flags the view attaches from the predicates themselves, so
+# moving the window in `_docs/decisions.md` item 1 moves the buttons with it.
+#
+# Every test below stubs a predicate rather than closing the cycle: closing one
+# would satisfy the old template as well, and prove nothing about which of the
+# two the page is reading.
+# --------------------------------------------------------------------------
+
+
+def refuse(monkeypatch, name: str) -> None:
+    """Make one predicate say no, where `cycles/views.py` asks it."""
+    monkeypatch.setattr(cycles_views, name, lambda user, card: False)
+
+
+@pytest.mark.django_db
+def test_the_edit_control_is_gone_when_can_edit_card_says_no(
+    client: Client, cycle: FeedbackCycle, member: User, monkeypatch
+) -> None:
+    """The card is the member's own and the cycle is collecting, so the status
+    the old template read still says yes. Only the predicate says no."""
+    card = make_card(cycle, member, "What I wrote")
+    log_in(client, member)
+    refuse(monkeypatch, "can_edit_card")
+
+    html = client.get(cards_url(cycle)).content.decode()
+
+    assert cycle.status == FeedbackCycle.Status.COLLECTING
+    assert "What I wrote" in html
+    assert ">Edit</button>" not in html
+    assert edit_url(card) not in html
+    # And the endpoint is the same answer, not merely a hidden button.
+    assert client.get(edit_url(card)).status_code == 403
+
+
+@pytest.mark.django_db
+def test_the_delete_control_is_gone_when_can_delete_card_says_no(
+    client: Client, cycle: FeedbackCycle, member: User, monkeypatch
+) -> None:
+    card = make_card(cycle, member, "What I wrote")
+    log_in(client, member)
+    refuse(monkeypatch, "can_delete_card")
+
+    html = client.get(cards_url(cycle)).content.decode()
+
+    assert ">Delete</button>" not in html
+    assert delete_url(card) not in html
+    assert client.post(delete_url(card)).status_code == 403
+    assert Card.objects.filter(pk=card.pk).exists()
+
+
+@pytest.mark.django_db
+def test_each_control_follows_its_own_predicate(
+    client: Client, cycle: FeedbackCycle, member: User, monkeypatch
+) -> None:
+    """Two rules, two flags: refusing one leaves the other's control standing."""
+    card = make_card(cycle, member)
+    log_in(client, member)
+    refuse(monkeypatch, "can_edit_card")
+
+    html = client.get(cards_url(cycle)).content.decode()
+
+    assert ">Edit</button>" not in html
+    assert ">Delete</button>" in html
+    assert delete_url(card) in html
+
+
+@pytest.mark.django_db
+def test_a_refused_card_keeps_the_rest_of_the_page(
+    client: Client, cycle: FeedbackCycle, member: User, monkeypatch
+) -> None:
+    """The flags are per card. A card nobody may change is still shown, and the
+    section it sits in still takes new cards, because `can_add_card` is a
+    different question."""
+    make_card(cycle, member, "Still readable")
+    log_in(client, member)
+    refuse(monkeypatch, "can_edit_card")
+    refuse(monkeypatch, "can_delete_card")
+
+    html = client.get(cards_url(cycle)).content.decode()
+
+    assert "Still readable" in html
+    assert create_url(cycle) in html
+    assert "Add to Start" in html
+    assert 'data-cards-readonly="true"' not in html
+    assert ">Edit</button>" not in html
+    assert ">Delete</button>" not in html
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("predicate", ["can_edit_card", "can_delete_card"])
+def test_the_htmx_fragments_carry_the_same_flags_as_the_page(
+    client: Client, cycle: FeedbackCycle, member: User, monkeypatch, predicate: str
+) -> None:
+    """A card swapped in after a save or a cancel is drawn by the same partial,
+    so it has to arrive with the same answers on it — otherwise the controls
+    come back, or vanish, depending on which route drew the card last."""
+    card = make_card(cycle, member, "As it was")
+    log_in(client, member)
+
+    saved = client.post(edit_url(card), {"text": "As it became"}).content.decode()
+    cancelled = client.get(show_url(card)).content.decode()
+    assert ">Edit</button>" in saved
+    assert ">Delete</button>" in saved
+    assert ">Edit</button>" in cancelled
+    assert ">Delete</button>" in cancelled
+
+    refuse(monkeypatch, predicate)
+    control = ">Edit</button>" if predicate == "can_edit_card" else ">Delete</button>"
+
+    assert control not in client.get(show_url(card)).content.decode()
+
+
+@pytest.mark.django_db
+def test_a_hidden_control_is_a_refusal_a_valid_token_cannot_get_round(
+    cycle: FeedbackCycle, member: User
+) -> None:
+    """The template is fail-safe, and this is what proves it.
+
+    The same POST is made twice with a CSRF token the server itself issued: it
+    is accepted while the cycle collects, so the token is genuine and the
+    request is well formed, and refused once the cycle is closed. What changed
+    is the rule, not the markup.
+    """
+    card = make_card(cycle, member, "As it was")
+    client = Client(enforce_csrf_checks=True)
+    client.login(username=member.username, password=PASSWORD)
+    html = client.get(cards_url(cycle)).content.decode()
+    token = client.cookies["csrftoken"].value
+    assert edit_url(card) in html
+
+    accepted = client.post(edit_url(card), {"text": "As it became", "csrfmiddlewaretoken": token})
+    card.refresh_from_db()
+    assert accepted.status_code == 200
+    assert card.text == "As it became"
+
+    close(cycle)
+    html = client.get(cards_url(cycle)).content.decode()
+    refused = client.post(
+        edit_url(card), {"text": "As it never became", "csrfmiddlewaretoken": token}
+    )
+    card.refresh_from_db()
+
+    assert edit_url(card) not in html
+    assert ">Edit</button>" not in html
+    assert refused.status_code == 403
+    assert card.text == "As it became"
+
+
+@pytest.mark.django_db
+def test_the_card_page_costs_the_same_queries_however_many_cards_are_on_it(
+    client: Client, cycle: FeedbackCycle, member: User
+) -> None:
+    """The flags are computed per card, so this is the test that says they cost
+    nothing per card. Both predicates read the card's author and the status of
+    its cycle, and the cycle comes back with the card in one query.
+    """
+    make_card(cycle, member, "The only one")
+    log_in(client, member)
+
+    with CaptureQueriesContext(connection) as one_card:
+        assert client.get(cards_url(cycle)).status_code == 200
+
+    for index in range(30):
+        make_card(cycle, member, f"Card {index}", category=CATEGORIES[index % 3])
+
+    with CaptureQueriesContext(connection) as many_cards:
+        assert client.get(cards_url(cycle)).status_code == 200
+
+    assert len(many_cards) == len(one_card), (
+        f"{len(one_card)} queries for one card and {len(many_cards)} for thirty-one: "
+        f"the page is asking the database something per card"
+    )
+
+
+def test_accepts_cards_is_read_by_no_template() -> None:
+    """It stays on the model as a description of the row — #7's tests read it —
+    but nothing renders from it any more."""
+    readers = [name for name, source in template_sources().items() if "accepts_cards" in source]
+
+    assert readers == []
+
+
+def test_accepts_cards_is_read_by_no_application_code() -> None:
+    """Its only appearance outside tests is the property itself."""
+    packages = ("accounts", "ai", "board", "config", "cycles", "meetings", "projects", "retro")
+    readers = [
+        str(path.relative_to(BASE_DIR))
+        for package in packages
+        for path in sorted((BASE_DIR / package).rglob("*.py"))
+        if "accepts_cards" in path.read_text()
+    ]
+
+    assert readers == ["cycles/models.py"]
+    assert cycles_models_source().count("accepts_cards") == 1
+
+
+def cycles_models_source() -> str:
+    return (BASE_DIR / "cycles" / "models.py").read_text()
 
 
 # --------------------------------------------------------------------------
