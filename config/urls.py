@@ -15,6 +15,9 @@ urlpatterns = [
     # Same shape as cycles: starting one lives under its cycle, the
     # retrospective itself under /retrospectives/.
     path("", include("retro.urls")),
+    # The board's read endpoint. Under /retros/, which is the URL #11 names and
+    # #14 polls; the retrospective's own page stays at /retrospectives/<pk>/.
+    path("", include("board.urls")),
     # And again for the meeting that follows the discussion: handing it over
     # hangs off the retrospective, the record it creates off itself.
     path("", include("meetings.urls")),
