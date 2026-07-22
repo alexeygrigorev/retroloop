@@ -3,51 +3,59 @@
 {% block title %}Retrospective — week of {{ cycle.week_start|date:'j F Y' }}{% endblock %}
 
 {% block content %}
-  <h1 class="text-2xl font-semibold tracking-tight">Retrospective</h1>
+  <h1 class="page-heading">Retrospective</h1>
   <p class="mt-2 text-sm text-slate-600">
-    <a href="{{ project.get_absolute_url }}" class="text-brand-700 underline hover:text-brand-600">
-      {{ project.name }}
-    </a>
-    <span class="text-slate-600"> / </span>
-    <a href="{{ cycle.get_absolute_url }}" class="text-brand-700 underline hover:text-brand-600">
-      Week of {{ cycle.week_start|date:'j F Y' }}
+    <a href="{{ project.get_absolute_url }}" class="link">{{ project.name }}</a>
+    —
+    <a href="{{ cycle.get_absolute_url }}" class="link">
+      week of {{ cycle.week_start|date:'j F Y' }}
     </a>
   </p>
 
-  {% comment %}
-    The stages in order, with the one it is in marked. The classes here are the
-    list and emphasis treatments the cycle templates already use, so this page
-    is converted along with them when the component set lands (#58).
-  {% endcomment %}
-  <ul
-    class="mt-6 flex list-disc flex-col gap-1 pl-5 text-sm text-slate-600"
-    data-retro-stage="{{ retro.stage }}"
-  >
-    {% for value, label in stages %}
-      {% if value == retro.stage %}
-        <li class="font-medium text-slate-700" aria-current="step">{{ label }} — now</li>
-      {% else %}
-        <li>{{ label }}</li>
-      {% endif %}
-    {% endfor %}
-  </ul>
+  <section class="panel mt-8">
+    <h2 class="section-heading">Stages</h2>
+    {% comment %}
+      The six stages in order, with the one it is in marked. A retrospective
+      moves through them one at a time and never backwards, so the list doubles
+      as the answer to what happens next.
+    {% endcomment %}
+    <ol class="list-rows" data-retro-stage="{{ retro.stage }}">
+      {% for value, label in stages %}
+        {% if value == retro.stage %}
+          <li class="font-medium text-slate-700" aria-current="step">{{ label }} — now</li>
+        {% else %}
+          <li>{{ label }}</li>
+        {% endif %}
+      {% endfor %}
+    </ol>
+  </section>
 
-  <dl class="mt-6 grid max-w-md grid-cols-[10rem_1fr] gap-y-2 text-sm">
-    <dt class="font-medium text-slate-700">Stage</dt>
-    <dd>{{ retro.get_stage_display }}</dd>
-
-    <dt class="font-medium text-slate-700">Facilitator</dt>
-    <dd>{{ cycle.facilitator }}</dd>
-
-    <dt class="font-medium text-slate-700">Started</dt>
-    <dd>{% if retro.started_at %}{{ retro.started_at }}{% else %}Not yet{% endif %}</dd>
-
-    <dt class="font-medium text-slate-700">Completed</dt>
-    <dd>{% if retro.completed_at %}{{ retro.completed_at }}{% else %}Not yet{% endif %}</dd>
-
-    <dt class="font-medium text-slate-700">Votes per member</dt>
-    <dd data-votes-per-member="{{ retro.votes_per_member }}">{{ retro.votes_per_member }}</dd>
-  </dl>
+  <section class="panel mt-8">
+    <h2 class="section-heading">This retrospective</h2>
+    {% comment %}
+      Each pair is a row of its own, so the label and its value read on one
+      line. `.list-rows` is the column; the pairs only need to stop being two
+      lines each.
+    {% endcomment %}
+    <dl class="list-rows">
+      <div class="flex gap-2">
+        <dt class="font-medium text-slate-700">Facilitator</dt>
+        <dd>{{ cycle.facilitator }}</dd>
+      </div>
+      <div class="flex gap-2">
+        <dt class="font-medium text-slate-700">Started</dt>
+        <dd>{% if retro.started_at %}{{ retro.started_at }}{% else %}Not yet{% endif %}</dd>
+      </div>
+      <div class="flex gap-2">
+        <dt class="font-medium text-slate-700">Completed</dt>
+        <dd>{% if retro.completed_at %}{{ retro.completed_at }}{% else %}Not yet{% endif %}</dd>
+      </div>
+      <div class="flex gap-2">
+        <dt class="font-medium text-slate-700">Votes per member</dt>
+        <dd data-votes-per-member="{{ retro.votes_per_member }}">{{ retro.votes_per_member }}</dd>
+      </div>
+    </dl>
+  </section>
 
   {% if retro.is_complete %}
     <p class="mt-6 text-sm text-slate-600">
@@ -76,12 +84,11 @@
     <form method="post" action="{% url 'retro-advance' retro.pk %}" class="mt-6">
       {% csrf_token %}
       <input type="hidden" name="version" value="{{ retro.version }}">
-      <button
-        type="submit"
-        class="rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700"
-      >
-        Advance to {{ next_stage_label }}
-      </button>
+      <button type="submit" class="btn-primary">Advance to {{ next_stage_label }}</button>
     </form>
   {% endif %}
+
+  <p class="mt-6 text-sm">
+    <a href="{{ cycle.get_absolute_url }}" class="link">Back to the week</a>
+  </p>
 {% endblock %}
