@@ -8,6 +8,8 @@ Documents
 
 Commands
 
+- `docker compose up -d db` - Postgres, needed before anything touches the
+  database
 - `uv sync` - install dependencies
 - `uv run manage.py runserver` - dev server
 - `uv run manage.py migrate` - apply migrations

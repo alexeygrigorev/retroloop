@@ -24,7 +24,26 @@ Configuration comes entirely from the environment — `DATABASE_URL`,
 `SECRET_KEY` has no fallback when `DEBUG` is off: the app refuses to start
 rather than run on a default key.
 
-Docker Compose replaces the manual Postgres setup in task 2.
+## Docker Compose
+
+Compose replaces the manual Postgres setup described in "Getting started" — on
+a machine with only Docker installed, it brings up the database, the app, and
+the background worker:
+
+```bash
+docker compose up
+docker compose run --rm web uv run manage.py migrate
+docker compose run --rm web uv run pytest
+```
+
+The app is served at `http://localhost:8000/`. Migrations never run
+automatically on container start, so `migrate` is an explicit command. The
+`db` service also publishes port 5432, so `uv run pytest` on the host works
+against the same database.
+
+Database rows live in a named volume: `docker compose down` keeps them and
+`docker compose down -v` discards them. The `worker` service is a placeholder
+that idles until the task backend arrives.
 
 ## Tests and linting
 

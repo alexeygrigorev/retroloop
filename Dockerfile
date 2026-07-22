@@ -9,10 +9,12 @@ COPY --from=ghcr.io/astral-sh/uv:0.10.11 /uv /uvx /usr/local/bin/
 
 # The virtualenv lives outside /app because Compose bind-mounts the working
 # tree there for development, which would otherwise hide it.
+# UV_FROZEN keeps `uv run` inside the container working from the committed lock
+# file instead of re-resolving against PyPI on every invocation.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
+    UV_FROZEN=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
     PATH=/opt/venv/bin:$PATH
 
@@ -21,7 +23,7 @@ WORKDIR /app
 # Dependencies resolve from the committed lock file, before the application
 # code is copied, so editing a .py file does not reinstall packages.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project
+RUN UV_COMPILE_BYTECODE=1 uv sync --frozen --no-install-project
 
 COPY . .
 
