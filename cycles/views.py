@@ -105,14 +105,26 @@ def cycle_close(request: HttpRequest, pk: int) -> HttpResponse:
     until a human acts. There is no reopening: `can_close_cycle` is false for a
     cycle that is already `CLOSED`, so a second attempt is refused here rather
     than merely hidden in the template.
-    """
-    cycle = get_object_or_404(FeedbackCycle.objects.select_related("project"), pk=pk)
-    member_or_404(request.user, cycle.project)
-    if not can_close_cycle(request.user, cycle):
-        raise PermissionDenied
 
-    cycle.status = FeedbackCycle.Status.CLOSED
-    cycle.save(update_fields=["status"])
+    Under the same lock as the card endpoints and the reveal, for the same
+    reason: "already closed" read without one is a value that another
+    transaction has already changed and not yet committed, so two facilitators
+    clicking together would both be told they closed it. It writes no card, so
+    nothing here could leak an author — it is locked because it is the fourth
+    path that reads this row's state and writes based on it, and leaving one
+    unlocked is how the first three came to differ.
+    """
+    with transaction.atomic():
+        cycle = get_object_or_404(
+            FeedbackCycle.objects.select_for_update(of=("self",)).select_related("project"), pk=pk
+        )
+        member_or_404(request.user, cycle.project)
+        if not can_close_cycle(request.user, cycle):
+            raise PermissionDenied
+
+        cycle.status = FeedbackCycle.Status.CLOSED
+        cycle.save(update_fields=["status"])
+
     messages.success(
         request,
         "The cycle is closed. Nothing more can be submitted to it, and it cannot be reopened.",
@@ -147,6 +159,33 @@ def own_card_or_404(user, pk: int) -> Card:
     return get_object_or_404(
         Card.objects.select_related("cycle", "cycle__project"), pk=pk, author=user
     )
+
+
+def lock_the_cycle_of(pk: int) -> None:
+    """Take the cycle's row lock before writing to one of its cards.
+
+    Every path that writes to `cycles_card` goes through this or through
+    `card_create`'s own locking load, and `cycles/reveal.py` takes the same row
+    on the way into REVEAL. That is what makes "the cycle is still COLLECTING"
+    a fact for the rest of the request instead of a value that was true when it
+    was read: a reveal in flight has already set the cycle to CLOSED and not
+    yet committed, so an unlocked reader sees COLLECTING, passes the permission
+    check, and applies its write on top of a reveal that has already happened
+    and will not happen again.
+
+    The lock is always taken on the cycle first and the card afterwards — the
+    same order as `card_create` and as the reveal — so the acquisition order is
+    the same everywhere and no two of them can wait on each other in a circle.
+    `advance_stage` goes retrospective, then cycle, then cards; nothing here
+    ever locks the retrospective, so that order cannot be reversed either.
+
+    The card is read once, unlocked, only to find which cycle it belongs to. A
+    card never moves between cycles, so that value cannot go stale.
+    """
+    cycle_id = Card.objects.filter(pk=pk).values_list("cycle_id", flat=True).first()
+    if cycle_id is None:
+        raise Http404
+    FeedbackCycle.objects.select_for_update().get(pk=cycle_id)
 
 
 def card_section(request: HttpRequest, cycle: FeedbackCycle, category: str, form=None) -> dict:
@@ -273,15 +312,33 @@ def card_edit(request: HttpRequest, pk: int) -> HttpResponse:
 
     The anonymous checkbox is part of this form, so it can still be changed
     while the cycle is collecting.
-    """
-    card = own_card_or_404(request.user, pk)
-    member_or_404(request.user, card.cycle.project)
-    if not can_edit_card(request.user, card):
-        raise PermissionDenied
 
-    form = CardForm(request.POST if request.method == "POST" else None, instance=card)
-    if request.method == "POST" and form.is_valid():
-        form.save()
+    Two separate things stop this endpoint restoring an author the reveal has
+    destroyed, because one of them is a lock and locks are easy to lose:
+
+    - the cycle is locked before its status is read, so an edit racing the
+      reveal waits for it and is then refused rather than allowed through on a
+      value that was true a moment ago;
+    - the save names its fields. A ModelForm's `save()` writes the whole row
+      back from the instance it loaded, so a stale copy would carry the
+      pre-reveal `author_id` and `position` with it. `text` and `is_anonymous`
+      are the only two columns this form owns, and now the only two it can
+      write — the `UPDATE` cannot mention `author_id` at all.
+    """
+    with transaction.atomic():
+        lock_the_cycle_of(pk)
+        card = own_card_or_404(request.user, pk)
+        member_or_404(request.user, card.cycle.project)
+        if not can_edit_card(request.user, card):
+            raise PermissionDenied
+
+        form = CardForm(request.POST if request.method == "POST" else None, instance=card)
+        saved = request.method == "POST" and form.is_valid()
+        if saved:
+            # The form's own field list, so the two cannot drift apart.
+            form.save(commit=False).save(update_fields=list(CardForm.Meta.fields))
+
+    if saved:
         return render(request, "cycles/card_list.html#card", {"card": card, "cycle": card.cycle})
 
     return render(
@@ -304,14 +361,22 @@ def card_delete(request: HttpRequest, pk: int) -> HttpResponse:
 
     POST only — `require_POST` makes a GET a 405 — so no link, no crawler and
     no prefetch can delete a card, and the form that does carries a CSRF token.
-    """
-    card = own_card_or_404(request.user, pk)
-    member_or_404(request.user, card.cycle.project)
-    if not can_delete_card(request.user, card):
-        raise PermissionDenied
 
-    cycle, category = card.cycle, card.category
-    card.delete()
+    Locked like the other two. A delete that lands after the reveal has counted
+    the card and given it a position takes the card out from under both, so the
+    participation row counts a card that is gone and the positions are left with
+    a hole in them — `_docs/decisions.md` item 1 frozen by timing rather than by
+    the rule.
+    """
+    with transaction.atomic():
+        lock_the_cycle_of(pk)
+        card = own_card_or_404(request.user, pk)
+        member_or_404(request.user, card.cycle.project)
+        if not can_delete_card(request.user, card):
+            raise PermissionDenied
+
+        cycle, category = card.cycle, card.category
+        card.delete()
 
     return render(
         request,
