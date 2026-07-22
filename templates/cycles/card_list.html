@@ -1,0 +1,231 @@
+{% extends "base_app.html" %}
+{% comment %}
+  The submission screen: one member's own Start, Stop and Continue cards for one
+  cycle, and the forms that add to them.
+
+  Nothing here filters anything. The view hands over the member's own cards
+  already filtered, which is what makes "you see only your own" a property of
+  the query rather than of this file. The partials below are the htmx
+  fragments — create, edit and delete each answer with one of them, so a change
+  swaps a section or a card in place and never reloads the page.
+
+  The class strings are the ones the other templates already use, verbatim, and
+  the forms render with `as_div`, so the component pass in #58 converts this
+  page along with the rest instead of having to reconcile a variant.
+
+  A `{# #}` comment spanning two lines is not a comment: Django's lexer matches
+  `{#.*?#}` without DOTALL and the source ends up on the page. Anything longer
+  than one line uses `{% comment %}`, as this does.
+{% endcomment %}
+
+{% block title %}Your cards — week of {{ cycle.week_start|date:'j F Y' }}{% endblock %}
+
+{% block content %}
+  <h1 class="text-2xl font-semibold tracking-tight">Your cards</h1>
+  <p class="mt-2 text-sm text-slate-600">
+    Week of {{ cycle.week_start|date:'j F Y' }} —
+    <a href="{{ cycle.get_absolute_url }}" class="text-brand-700 underline hover:text-brand-600">
+      back to the cycle
+    </a>
+    in
+    <a href="{{ project.get_absolute_url }}" class="text-brand-700 underline hover:text-brand-600">
+      {{ project.name }}
+    </a>
+  </p>
+
+  <p class="mt-6 text-sm text-slate-600">
+    This page shows your own cards and nobody else's. What other people wrote
+    stays theirs until the retrospective reveals it.
+  </p>
+
+  {% if not can_add %}
+    <p data-cards-readonly="true" class="mt-6 text-sm text-slate-600">
+      This cycle is closed, so your cards are read-only. Nothing can be added to
+      it, changed in it or removed from it.
+    </p>
+  {% endif %}
+
+  {% if not cards %}
+    {% comment %}
+      The empty state, in place of three empty columns that say nothing. It is
+      the whole-page one: a member who has written under two headings and not
+      the third does not need telling what the page is for.
+    {% endcomment %}
+    <p id="cards-empty" class="mt-6 text-sm text-slate-600">
+      {% if can_add %}
+        You have not written anything for this week yet. Add a card under Start,
+        Stop or Continue below — one short thought each, as many as you like.
+      {% else %}
+        You did not add any cards to this cycle, and it is closed now.
+      {% endif %}
+    </p>
+  {% endif %}
+
+  <div class="mt-8 flex flex-col gap-6">
+    {% for section in sections %}{% partial card_section %}{% endfor %}
+  </div>
+{% endblock %}
+
+{% comment %}
+  One Start/Stop/Continue section. Create and delete both answer with this
+  partial, so the list, the empty line and the form always come back in the
+  state the server says they are in.
+{% endcomment %}
+{% partialdef card_section %}
+  <section
+    id="section-{{ section.category }}"
+    data-card-section="{{ section.category }}"
+    class="rounded-lg border border-slate-200 bg-white p-4"
+  >
+    <h2 class="text-lg font-medium">{{ section.category_label }}</h2>
+
+    <ul class="mt-4 flex flex-col gap-2">
+      {% for card in section.cards %}{% partial card %}{% endfor %}
+    </ul>
+
+    {% if not section.cards %}
+      <p class="mt-4 text-sm text-slate-500">Nothing under this heading yet.</p>
+    {% endif %}
+
+    {% if section.can_add %}
+      {% comment %}
+        htmx posts the form and swaps this whole section back in; the action and
+        method are there so the same form works without JavaScript. The section
+        is the affected fragment — a new card, a cleared textarea and a
+        disappearing "nothing yet" line are one change, not three.
+      {% endcomment %}
+      {% url 'card-create' section.cycle.pk section.category as create_url %}
+      <form
+        method="post"
+        action="{{ create_url }}"
+        hx-post="{{ create_url }}"
+        hx-target="#section-{{ section.category }}"
+        hx-swap="outerHTML"
+        x-data="{ remaining: {{ section.remaining }} }"
+        class="mt-6 flex max-w-md flex-col gap-2"
+      >
+        {% csrf_token %}
+        {{ section.form.as_div }}
+        <p class="text-sm text-slate-500">
+          <span x-text="remaining">{{ section.remaining }}</span> characters left
+        </p>
+        <button
+          type="submit"
+          class="mt-2 self-start rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white
+                 hover:bg-brand-700"
+        >
+          Add to {{ section.category_label }}
+        </button>
+      </form>
+    {% endif %}
+  </section>
+{% endpartialdef %}
+
+{% comment %}
+  One card, read-only. The controls are shown only while the cycle is
+  collecting; card_edit and card_delete ask the same question again and refuse
+  anyone the template merely stopped showing a button to.
+{% endcomment %}
+{% partialdef card %}
+  <li
+    id="card-{{ card.pk }}"
+    data-card="{{ card.pk }}"
+    class="rounded-lg border border-slate-200 bg-white p-4"
+  >
+    <p class="whitespace-pre-line">{{ card.text }}</p>
+    {% if card.is_anonymous %}
+      <p class="mt-2 text-sm text-slate-500">
+        Anonymous at reveal — your name comes off this one permanently.
+      </p>
+    {% endif %}
+
+    {% if card.cycle.accepts_cards %}
+      {% comment %}
+        `{% url ... as %}`, here and below, because these partials are also
+        rendered on their own by tests/test_template_comments.py — with no card
+        in the context, the plain tag is a NoReverseMatch rather than a link.
+      {% endcomment %}
+      {% url 'card-edit' card.pk as card_edit_url %}
+      {% url 'card-delete' card.pk as card_delete_url %}
+      <div class="mt-4 flex flex-wrap items-center gap-4 text-sm">
+        <button
+          type="button"
+          hx-get="{{ card_edit_url }}"
+          hx-target="#card-{{ card.pk }}"
+          hx-swap="outerHTML"
+          class="text-brand-700 underline hover:text-brand-600"
+        >
+          Edit
+        </button>
+
+        {% comment %}
+          A POST with a CSRF token, never a link: a GET that deletes is one
+          prefetch away from deleting by itself. card_delete is require_POST, so
+          a GET is a 405 whatever this markup says.
+        {% endcomment %}
+        <form
+          method="post"
+          action="{{ card_delete_url }}"
+          hx-post="{{ card_delete_url }}"
+          hx-target="#section-{{ card.category }}"
+          hx-swap="outerHTML"
+        >
+          {% csrf_token %}
+          <button type="submit" class="text-brand-700 underline hover:text-brand-600">
+            Delete
+          </button>
+        </form>
+      </div>
+    {% endif %}
+  </li>
+{% endpartialdef %}
+
+{% comment %}
+  The same card with its form open. It keeps the card's id, so saving or
+  cancelling swaps the read-only card straight back over it. The anonymous
+  checkbox is in this form too: it stays changeable while the cycle collects.
+{% endcomment %}
+{% partialdef card_edit_form %}
+  <li
+    id="card-{{ card.pk }}"
+    data-card-editing="{{ card.pk }}"
+    class="rounded-lg border border-slate-200 bg-white p-4"
+  >
+    {% url 'card-edit' card.pk as card_edit_url %}
+    {% url 'card-show' card.pk as card_show_url %}
+    <form
+      method="post"
+      action="{{ card_edit_url }}"
+      hx-post="{{ card_edit_url }}"
+      hx-target="#card-{{ card.pk }}"
+      hx-swap="outerHTML"
+      x-data="{ remaining: {{ remaining }} }"
+      class="flex max-w-md flex-col gap-2"
+    >
+      {% csrf_token %}
+      {{ form.as_div }}
+      <p class="text-sm text-slate-500">
+        <span x-text="remaining">{{ remaining }}</span> characters left
+      </p>
+
+      <div class="mt-2 flex flex-wrap items-center gap-4 text-sm">
+        <button
+          type="submit"
+          class="self-start rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white
+                 hover:bg-brand-700"
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          hx-get="{{ card_show_url }}"
+          hx-target="#card-{{ card.pk }}"
+          hx-swap="outerHTML"
+          class="text-brand-700 underline hover:text-brand-600"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  </li>
+{% endpartialdef %}

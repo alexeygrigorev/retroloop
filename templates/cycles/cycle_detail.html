@@ -37,6 +37,18 @@
     </p>
   {% endif %}
 
+  {% comment %}
+    Shown to every member, open or closed: while the cycle collects it is where
+    you write your cards, and once it is closed it is where you read back what
+    you wrote. It never shows anyone else's.
+  {% endcomment %}
+  {% url 'cycle-cards' cycle.pk as cards_url %}
+  <p class="mt-6 text-sm text-slate-600">
+    <a href="{{ cards_url }}" class="text-brand-700 underline hover:text-brand-600">
+      Your cards for this week
+    </a>
+  </p>
+
   {% if can_close %}
     {% comment %}
       Shown only to this cycle's facilitator, and only while it is collecting.
