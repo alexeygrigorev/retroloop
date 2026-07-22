@@ -7,11 +7,11 @@
 {% block title %}Weekly Team Feedback{% endblock %}
 
 {% block content %}
-  <h1 class="text-2xl font-semibold tracking-tight">Weekly Team Feedback</h1>
+  <h1 class="page-heading">Weekly Team Feedback</h1>
   <p class="mt-2 text-slate-600">The project skeleton is running.</p>
 
-  <section class="mt-8 rounded-lg border border-slate-200 bg-white p-4">
-    <h2 class="text-lg font-medium">Frontend check</h2>
+  <section class="panel mt-8">
+    <h2 class="section-heading">Frontend check</h2>
     <p class="mt-1 text-sm text-slate-600">
       The button posts with htmx and swaps the panel below in place, without a
       page reload. The panel it swaps in is an Alpine component, so a counter
@@ -24,8 +24,7 @@
       hx-post="{% url 'frontend_check' %}"
       hx-target="#frontend-check-panel"
       hx-swap="innerHTML"
-      class="mt-4 rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white
-             hover:bg-brand-700"
+      class="btn-primary mt-4"
     >
       Load the fragment
     </button>

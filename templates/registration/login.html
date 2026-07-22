@@ -3,19 +3,13 @@
 {% block title %}Log in{% endblock %}
 
 {% block content %}
-  <h1 class="text-2xl font-semibold tracking-tight">Log in</h1>
+  <h1 class="page-heading">Log in</h1>
 
-  <form method="post" class="mt-6 flex max-w-sm flex-col gap-2">
+  <form method="post" class="form-fields">
     {% csrf_token %}
-    {{ form.as_p }}
+    {{ form.as_div }}
     <input type="hidden" name="next" value="{{ next }}">
-    <button
-      type="submit"
-      class="mt-2 self-start rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white
-             hover:bg-brand-700"
-    >
-      Log in
-    </button>
+    <button type="submit" class="btn-primary">Log in</button>
   </form>
 
   {% comment %}
@@ -26,7 +20,7 @@
     No account yet?
     <a
       href="{% url 'signup' %}{% if next %}?next={{ next|urlencode }}{% endif %}"
-      class="text-brand-700 underline hover:text-brand-600"
+      class="link"
     >Sign up</a>.
   </p>
   <p class="mt-2 text-sm text-slate-600">

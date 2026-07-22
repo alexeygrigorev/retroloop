@@ -10,23 +10,14 @@
   {% if user.is_authenticated %}
     {# Falls back to the username when the display name is blank. #}
     <span class="text-slate-600">{{ user }}</span>
-    <a href="{% url 'project-list' %}" class="text-brand-700 underline hover:text-brand-600">
-      Your projects
-    </a>
-    <a href="{% url 'password_change' %}" class="text-brand-700 underline hover:text-brand-600">
-      Change password
-    </a>
+    <a href="{% url 'project-list' %}" class="link">Your projects</a>
+    <a href="{% url 'password_change' %}" class="link">Change password</a>
     <form method="post" action="{% url 'logout' %}">
       {% csrf_token %}
-      <button
-        type="submit"
-        class="rounded-md border border-slate-300 px-2 py-1 hover:border-slate-400 hover:bg-slate-100"
-      >
-        Log out
-      </button>
+      <button type="submit" class="btn-secondary">Log out</button>
     </form>
   {% else %}
-    <a href="{% url 'login' %}" class="text-brand-700 underline hover:text-brand-600">Log in</a>
-    <a href="{% url 'signup' %}" class="text-brand-700 underline hover:text-brand-600">Sign up</a>
+    <a href="{% url 'login' %}" class="link">Log in</a>
+    <a href="{% url 'signup' %}" class="link">Sign up</a>
   {% endif %}
 {% endblock %}

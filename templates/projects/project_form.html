@@ -3,18 +3,12 @@
 {% block title %}Create a project{% endblock %}
 
 {% block content %}
-  <h1 class="text-2xl font-semibold tracking-tight">Create a project</h1>
+  <h1 class="page-heading">Create a project</h1>
 
-  <form method="post" class="mt-6 flex max-w-sm flex-col gap-2">
+  <form method="post" class="form-fields">
     {% csrf_token %}
-    {{ form.as_p }}
-    <button
-      type="submit"
-      class="mt-2 self-start rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white
-             hover:bg-brand-700"
-    >
-      Create project
-    </button>
+    {{ form.as_div }}
+    <button type="submit" class="btn-primary">Create project</button>
   </form>
 
   <p class="mt-6 text-sm text-slate-600">
@@ -22,8 +16,6 @@
   </p>
 
   <p class="mt-6 text-sm">
-    <a href="{% url 'project-list' %}" class="text-brand-700 underline hover:text-brand-600">
-      Back to your projects
-    </a>
+    <a href="{% url 'project-list' %}" class="link">Back to your projects</a>
   </p>
 {% endblock %}
