@@ -22,6 +22,7 @@ from cycles.forms import FeedbackCycleForm
 from cycles.models import FeedbackCycle, monday_of
 from projects.models import Project
 from projects.views import is_facilitator, member_or_404
+from retro.services import can_start_retrospective
 
 # --------------------------------------------------------------------------
 # Rules. One condition each, so #6 can lift them out as they are.
@@ -88,6 +89,12 @@ def cycle_detail(request: HttpRequest, pk: int) -> HttpResponse:
             "cycle": cycle,
             "project": cycle.project,
             "can_close": can_close_cycle(request.user, cycle),
+            # The retrospective that follows this week, and whether this person
+            # may start it. The rule itself belongs to #9's service module; this
+            # view only asks it, the same way the template only shows what the
+            # view already decided.
+            "retro": getattr(cycle, "retrospective", None),
+            "can_start_retro": can_start_retrospective(request.user, cycle),
         },
     )
 

@@ -12,6 +12,9 @@ urlpatterns = [
     # Opening a cycle lives under its project, the cycle itself under /cycles/,
     # so the app owns both halves of its URL space in one file.
     path("", include("cycles.urls")),
+    # Same shape as cycles: starting one lives under its cycle, the
+    # retrospective itself under /retrospectives/.
+    path("", include("retro.urls")),
     # Short and shareable, and outside /projects/ because the person opening it
     # is not a member of anything yet.
     path("join/<uuid:token>/", join_project, name="join-project"),

@@ -1,0 +1,87 @@
+{% extends "base_app.html" %}
+
+{% block title %}Retrospective — week of {{ cycle.week_start|date:'j F Y' }}{% endblock %}
+
+{% block content %}
+  <h1 class="text-2xl font-semibold tracking-tight">Retrospective</h1>
+  <p class="mt-2 text-sm text-slate-600">
+    <a href="{{ project.get_absolute_url }}" class="text-brand-700 underline hover:text-brand-600">
+      {{ project.name }}
+    </a>
+    <span class="text-slate-400"> / </span>
+    <a href="{{ cycle.get_absolute_url }}" class="text-brand-700 underline hover:text-brand-600">
+      Week of {{ cycle.week_start|date:'j F Y' }}
+    </a>
+  </p>
+
+  {% comment %}
+    The stages in order, with the one it is in marked. The classes here are the
+    list and emphasis treatments the cycle templates already use, so this page
+    is converted along with them when the component set lands (#58).
+  {% endcomment %}
+  <ul
+    class="mt-6 flex list-disc flex-col gap-1 pl-5 text-sm text-slate-600"
+    data-retro-stage="{{ retro.stage }}"
+  >
+    {% for value, label in stages %}
+      {% if value == retro.stage %}
+        <li class="font-medium text-slate-700" aria-current="step">{{ label }} — now</li>
+      {% else %}
+        <li>{{ label }}</li>
+      {% endif %}
+    {% endfor %}
+  </ul>
+
+  <dl class="mt-6 grid max-w-md grid-cols-[10rem_1fr] gap-y-2 text-sm">
+    <dt class="font-medium text-slate-700">Stage</dt>
+    <dd>{{ retro.get_stage_display }}</dd>
+
+    <dt class="font-medium text-slate-700">Facilitator</dt>
+    <dd>{{ cycle.facilitator }}</dd>
+
+    <dt class="font-medium text-slate-700">Started</dt>
+    <dd>{% if retro.started_at %}{{ retro.started_at }}{% else %}Not yet{% endif %}</dd>
+
+    <dt class="font-medium text-slate-700">Completed</dt>
+    <dd>{% if retro.completed_at %}{{ retro.completed_at }}{% else %}Not yet{% endif %}</dd>
+
+    <dt class="font-medium text-slate-700">Votes per member</dt>
+    <dd data-votes-per-member="{{ retro.votes_per_member }}">{{ retro.votes_per_member }}</dd>
+  </dl>
+
+  {% if retro.is_complete %}
+    <p class="mt-6 text-sm text-slate-600">
+      This retrospective is complete. It does not move again, and there is no
+      stage after this one.
+    </p>
+  {% else %}
+    <p class="mt-6 text-sm text-slate-600">
+      A retrospective moves forward one stage at a time, and never backwards.
+      {% if retro.stage == 'DRAFT' %}
+        Advancing to Reveal closes the feedback cycle: once the cards are
+        revealed nothing more can be submitted.
+      {% endif %}
+    </p>
+  {% endif %}
+
+  {% if can_advance %}
+    {% comment %}
+      Shown only to this cycle's facilitator, and only while there is a stage
+      left to move to. The button is a courtesy: advance_stage() asks
+      can_advance_stage again, refuses everyone else, and refuses a
+      retrospective that is already complete. The version below is the one this
+      page was rendered from, so a second click on a stale page is rejected
+      rather than advancing the board twice.
+    {% endcomment %}
+    <form method="post" action="{% url 'retro-advance' retro.pk %}" class="mt-6">
+      {% csrf_token %}
+      <input type="hidden" name="version" value="{{ retro.version }}">
+      <button
+        type="submit"
+        class="rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700"
+      >
+        Advance to {{ next_stage_label }}
+      </button>
+    </form>
+  {% endif %}
+{% endblock %}
