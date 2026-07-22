@@ -819,6 +819,79 @@ def test_the_collection_plugin_counts_before_and_after_modifyitems() -> None:
     assert collected_files == set(committed_test_files()), sorted(collected_files)
 
 
+def test_the_plugin_sees_a_hook_thin_the_suite_after_collection() -> None:
+    """The plugin's raw count is pre-modifyitems, so a thinning hook is visible.
+
+    A collection-modifying hook is injected alongside the real plugin. It keeps
+    one test per module - what QA's `EXPECTED_TESTS: "23"` attack did. The plugin
+    must still report the full pre-thin count as ``raw`` while ``items`` falls to
+    the thinned number; that gap is what the set gate's deselection check reads.
+    A plugin that measured ``raw`` from the surviving items would report them
+    equal and the attack would be invisible.
+    """
+    thinner = textwrap.dedent(
+        """
+        def pytest_collection_modifyitems(config, items):
+            keep = {}
+            for item in items:
+                keep.setdefault(item.nodeid.split("::", 1)[0], item)
+            items[:] = list(keep.values())
+        """
+    )
+    with tempfile.TemporaryDirectory() as scratch_name:
+        scratch = Path(scratch_name)
+        (scratch / "_ci_collect.py").write_text(plugin_script(SET_GATE))
+        (scratch / "_ci_thin.py").write_text(thinner)
+        out = scratch / "collect.json"
+        environment = {
+            key: value for key, value in os.environ.items() if not key.startswith("PYTEST_")
+        }
+        environment["CI_COLLECT_OUT"] = str(out)
+        environment["PYTHONPATH"] = str(scratch)
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "--collect-only",
+                "-q",
+                "-p",
+                "_ci_collect",
+                "-p",
+                "_ci_thin",
+                "-p",
+                "no:cacheprovider",
+            ],
+            cwd=BASE_DIR,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        data = json.loads(out.read_text())
+
+    # raw is the whole suite; items is one per module. The gap is the thinning.
+    assert data["raw"] == expected_tests(), data
+    assert data["items"] == len(committed_test_files()), data
+    assert data["raw"] > data["items"], data
+
+    # And run the real checker against exactly this collection: it must be red on
+    # the deselection check, even though the file set is intact and every file
+    # still contributes one test.
+    with tempfile.TemporaryDirectory() as red_name:
+        red = Path(red_name)
+        manifest = committed_test_files()
+        result = run_set_gate(
+            red,
+            on_disk=manifest,
+            result=collection(manifest, items=data["items"], raw=data["raw"]),
+            expected=data["items"],  # attacker lowers EXPECTED_TESTS to match
+        )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "removed during collection" in output, output
+
+
 def test_the_committed_file_list_is_exactly_the_files_on_disk() -> None:
     """The suite-level twin of the count check, for the file set.
 
