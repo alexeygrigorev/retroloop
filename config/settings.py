@@ -150,6 +150,15 @@ STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_DIRS = [BASE_DIR / "static"]
 
+# The React island. `npm run build:js` writes a hashed bundle and the manifest
+# naming it into static/board/, which is a static file directory like any other,
+# so collectstatic collects them and the running application needs no Node. A
+# path, not a URL and not an env var: it is where the build puts its output, the
+# same kind of structural fact as STATIC_ROOT above. The template tag in
+# retro/templatetags/vite.py is the only reader.
+VITE_BUILD_SUBDIR = "board"
+VITE_MANIFEST = BASE_DIR / "static" / VITE_BUILD_SUBDIR / "manifest.json"
+
 # Uploads stream to disk instead of buffering in memory; the media pipeline
 # hands these paths to the worker over a shared volume.
 FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024

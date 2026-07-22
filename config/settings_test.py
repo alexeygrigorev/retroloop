@@ -53,3 +53,11 @@ TASKS = {
         "QUEUES": ["default"],
     }
 }
+
+# A checked-in stand-in for the manifest `npm run build:js` writes, so the Python
+# suite runs on a machine that has never installed Node — the same reason nothing
+# here needs `npm run build:css` either. It is a fixture, not a relaxation: the
+# real manifest, the caching rule and the loud failure when the build is missing
+# are each tested against a real file in tests/test_island.py, which points this
+# setting back at the build output.
+VITE_MANIFEST = BASE_DIR / "tests" / "fixtures" / "vite_manifest.json"

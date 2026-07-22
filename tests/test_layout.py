@@ -171,14 +171,32 @@ def test_tailwind_is_configured_css_first() -> None:
     assert "@source" in source
 
 
-def test_package_json_pins_the_tailwind_cli_and_nothing_else() -> None:
+def test_package_json_pins_the_tailwind_cli_and_the_island_toolchain_and_nothing_else() -> None:
+    """The list is closed, and every version is exact.
+
+    #3 put the Tailwind CLI here and nothing else. #13 added the three packages
+    the React island needs — Vite, React and `react-dom`, the versions named in
+    the architecture — and nothing beyond them: adding an npm dependency follows
+    the same rule as a Python one, pinned and asked for first. Everything stays a
+    devDependency because none of it is shipped: Node is a build-time tool and
+    the image runs without it.
+    """
     package = json.loads((BASE_DIR / "package.json").read_text())
 
-    assert set(package["devDependencies"]) == {"@tailwindcss/cli", "tailwindcss"}
+    assert set(package["devDependencies"]) == {
+        "@tailwindcss/cli",
+        "tailwindcss",
+        "vite",
+        "react",
+        "react-dom",
+    }
     assert "dependencies" not in package
     for version in package["devDependencies"].values():
         assert re.fullmatch(r"\d+\.\d+\.\d+", version), version
     assert package["devDependencies"]["tailwindcss"].startswith("4.3.")
+    assert package["devDependencies"]["vite"].startswith("8.1.")
+    assert package["devDependencies"]["react"].startswith("19.2.")
+    assert package["devDependencies"]["react-dom"] == package["devDependencies"]["react"]
 
 
 def test_one_command_builds_the_css_and_one_watches_it() -> None:

@@ -33,14 +33,24 @@ only: no image in this project ships a Node runtime, and the app serves nothing
 but the files the build leaves behind.
 
 ```bash
-npm install          # Tailwind CLI, the only thing in package.json
+npm install          # the build-time toolchain: Tailwind CLI and Vite
 npm run build:css    # assets/css/app.css -> static/css/app.css
 npm run watch:css    # the same, rebuilding as you edit templates
+npm run build:js     # assets/js/board.jsx -> static/board/, hashed
+npm run watch:js     # the same, rebuilding as you edit the island
 ```
 
-`static/css/app.css` is generated and git-ignored, so build it once after
-cloning and after pulling template changes. Tailwind 4 is configured CSS-first
-inside `assets/css/app.css` — there is no `tailwind.config.js`.
+`static/css/app.css` and `static/board/` are generated and git-ignored, so build
+them once after cloning and again after pulling template or island changes.
+Tailwind 4 is configured CSS-first inside `assets/css/app.css` — there is no
+`tailwind.config.js`.
+
+The retrospective page mounts one React component, built by Vite from
+`assets/js/board.jsx`. The bundle's filename carries a content hash, so
+templates never name it: `{% vite_bundle "assets/js/board.jsx" %}` reads
+`static/board/manifest.json` and renders the script tag. A missing or
+unreadable manifest raises an error naming `npm run build:js` rather than
+serving a page with a script tag that loads nothing.
 
 htmx and Alpine are committed under `static/vendor/` at pinned versions and
 served from this project's own domain. Nothing on a page reaches a CDN.

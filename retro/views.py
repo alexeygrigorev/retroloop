@@ -11,7 +11,7 @@ from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
-from cycles.models import FeedbackCycle
+from cycles.models import Card, FeedbackCycle
 from projects.views import member_or_404
 from retro.models import Retrospective
 from retro.services import (
@@ -59,6 +59,9 @@ def retro_detail(request: HttpRequest, pk: int) -> HttpResponse:
             # person advance it, and is there anywhere left to advance to.
             "can_advance": can_advance_stage(request.user, retro) and not retro.is_complete,
             "next_stage_label": _stage_label(retro.next_stage),
+            # What the React island is handed, rendered into the page with
+            # `json_script`. See board_bootstrap() for why it is this and no more.
+            "board_bootstrap": board_bootstrap(request.user, retro),
         },
     )
 
@@ -85,6 +88,35 @@ def retro_advance(request: HttpRequest, pk: int) -> HttpResponse:
 
     messages.success(request, f"The retrospective is now in {retro.get_stage_display()}.")
     return redirect(retro)
+
+
+def board_bootstrap(user, retro: Retrospective) -> dict:
+    """The initial state the React island mounts with — four things, and no more.
+
+    The retrospective's id, its `stage`, its `version`, and this viewer's own
+    cards. Nothing else, and in particular not another member's card text.
+
+    That is the whole point of the shape. The island renders on the real
+    retrospective page, so anything put in here is in the page source of a page
+    every member of the project can open — which is exactly what #10 (anonymity
+    at reveal) and #11 (the state endpoint, which decides what a member may see
+    at each stage) exist to prevent. A placeholder that dumped the board into
+    the document would leak it in a way no stage machine could take back.
+
+    So the board's real state does not come from here. #14 wires the island to
+    #11's state endpoint and the filtering rule lives there, where it belongs;
+    this function stays as it is, or goes.
+
+    `author=user` is also why anonymised cards cannot appear: #10 sets `author`
+    to NULL at reveal, and a NULL author matches nobody.
+    """
+    cards = Card.objects.filter(cycle=retro.cycle, author=user)
+    return {
+        "id": retro.pk,
+        "stage": retro.stage,
+        "version": retro.version,
+        "cards": [{"id": card.pk, "category": card.category, "text": card.text} for card in cards],
+    }
 
 
 def _stage_label(stage: str | None) -> str:
