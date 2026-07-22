@@ -39,6 +39,17 @@ CHUNK_SUFFIX = ".opus"
 # The longest a chunk may run even when it would still fit under the size cap.
 MAX_CHUNK_SECONDS = 3 * 60 * 60
 
+# The shortest a *final* chunk may be before it is merged into the one before
+# it. A recording a hair over MAX_CHUNK_SECONDS otherwise ends in a tail of
+# whatever is left — QA measured 0.2 s and 507 bytes for a six hour source — and
+# every chunk is its own transcription request, so that tail is a round trip and
+# a bill for a fifth of a second of audio. Thirty seconds is below anything
+# worth a request of its own, and small enough that merging one back is free:
+# at the ~1.57 kB/s this encoder produces it adds about 47 kB to a three hour
+# chunk that sits around 17 MB, well under the 24 MB ceiling. The merge is
+# refused outright when even that would not fit — see `_merge_short_tail`.
+MIN_CHUNK_SECONDS = 30.0
+
 # A cut is only looked for in the last part of the allowed window, so silence
 # early in a chunk cannot produce a run of very short ones.
 SILENCE_SEARCH_FRACTION = 0.5
@@ -81,6 +92,7 @@ def prepare_audio_chunks(
     work_root: str | Path | None = None,
     max_chunk_bytes: int = MAX_CHUNK_BYTES,
     max_chunk_seconds: float = MAX_CHUNK_SECONDS,
+    min_chunk_seconds: float = MIN_CHUNK_SECONDS,
     timeout_seconds: float = FFMPEG_TIMEOUT_SECONDS,
 ) -> list[Path]:
     """Normalise `source` to 16 kHz mono Opus and split it into chunks.
@@ -89,6 +101,10 @@ def prepare_audio_chunks(
     recording fits. The chunks live in a directory of their own under the
     scratch area and are the caller's to delete once it is done with them;
     every intermediate file is removed here, on success and on failure alike.
+
+    A last chunk that would come out shorter than `min_chunk_seconds` is merged
+    into the one before it rather than returned on its own, unless the merge
+    would take that chunk over `max_chunk_bytes`.
 
     Raises `MediaProcessingError` (see its subclasses) with a message that says
     what went wrong. It never lets an ffmpeg traceback or a raw exit code out.
@@ -126,6 +142,7 @@ def prepare_audio_chunks(
             work_dir=work_dir,
             max_chunk_bytes=max_chunk_bytes,
             max_chunk_seconds=max_chunk_seconds,
+            min_chunk_seconds=min_chunk_seconds,
             timeout_seconds=timeout_seconds,
         )
         return _collect(pieces, output_dir)
@@ -329,6 +346,40 @@ def _plan_cuts(duration: float, silences: list[tuple[float, float]], limit: floa
     return cuts
 
 
+def _merge_short_tail(
+    cuts: list[float],
+    *,
+    duration: float,
+    bytes_per_second: float,
+    min_chunk_seconds: float,
+    max_chunk_bytes: int,
+) -> list[float]:
+    """Drop the last cut when the tail after it is too short to stand alone.
+
+    Not cutting there is the merge: the leftover audio stays inside the chunk
+    before it instead of being returned as a chunk — and a request — of its own.
+
+    The size cap outranks this. Chunking exists because the transcription API
+    refuses a request over `max_chunk_bytes`, so a merge that the bitrate says
+    would take the combined chunk past the same budget the cuts were planned
+    against is refused, and the short tail is returned rather than risk a chunk
+    no request can carry. That budget is `CHUNK_SIZE_SAFETY_FRACTION` of the
+    ceiling, exactly as in `_duration_limit`, which means the merge only ever
+    happens when the clock cap decided the chunk length and there are megabytes
+    of headroom underneath it. `_enforce_size` measures the files afterwards
+    either way, so an estimate that turns out wrong costs a re-split, never an
+    oversized chunk.
+    """
+    if not cuts:
+        return cuts
+    if duration - cuts[-1] >= min_chunk_seconds:
+        return cuts
+    merged_seconds = duration - (cuts[-2] if len(cuts) > 1 else 0.0)
+    if merged_seconds * bytes_per_second > max_chunk_bytes * CHUNK_SIZE_SAFETY_FRACTION:
+        return cuts
+    return cuts[:-1]
+
+
 def _segment(
     ffmpeg: str, path: Path, cuts: list[float], out_dir: Path, timeout_seconds: float
 ) -> list[Path]:
@@ -369,6 +420,7 @@ def _split(
     work_dir: Path,
     max_chunk_bytes: int,
     max_chunk_seconds: float,
+    min_chunk_seconds: float,
     timeout_seconds: float,
 ) -> list[Path]:
     limit = _duration_limit(duration, size, max_chunk_bytes, max_chunk_seconds)
@@ -376,7 +428,13 @@ def _split(
         return [normalized]
 
     silences = _detect_silences(ffmpeg, normalized, timeout_seconds)
-    cuts = _plan_cuts(duration, silences, limit)
+    cuts = _merge_short_tail(
+        _plan_cuts(duration, silences, limit),
+        duration=duration,
+        bytes_per_second=size / duration,
+        min_chunk_seconds=min_chunk_seconds,
+        max_chunk_bytes=max_chunk_bytes,
+    )
     if not cuts:
         parts = [normalized]
     else:
