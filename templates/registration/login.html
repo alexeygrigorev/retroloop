@@ -18,9 +18,16 @@
     </button>
   </form>
 
+  {% comment %}
+    The `next` travels with the link, so a join link survives signing up
+    instead of landing the new member on the homepage.
+  {% endcomment %}
   <p class="mt-6 text-sm text-slate-600">
     No account yet?
-    <a href="{% url 'signup' %}" class="text-brand-700 underline hover:text-brand-600">Sign up</a>.
+    <a
+      href="{% url 'signup' %}{% if next %}?next={{ next|urlencode }}{% endif %}"
+      class="text-brand-700 underline hover:text-brand-600"
+    >Sign up</a>.
   </p>
   <p class="mt-2 text-sm text-slate-600">
     Forgotten your password? There is no self-serve reset — ask an

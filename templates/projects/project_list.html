@@ -1,0 +1,31 @@
+{# Plain and unstyled until task 3 lands a base layout to extend. #}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Your projects</title>
+  </head>
+  <body>
+    <h1>Your projects</h1>
+
+    {% if messages %}
+      <ul>
+        {% for message in messages %}<li>{{ message }}</li>{% endfor %}
+      </ul>
+    {% endif %}
+
+    {% if projects %}
+      <ul>
+        {% for project in projects %}
+          <li><a href="{{ project.get_absolute_url }}">{{ project.name }}</a></li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p>You are not a member of any project yet.</p>
+    {% endif %}
+
+    <p><a href="{% url 'project-create' %}">Create a project</a></p>
+    <p><a href="{% url 'home' %}">Home</a></p>
+  </body>
+</html>

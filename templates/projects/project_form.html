@@ -1,0 +1,21 @@
+{# Plain and unstyled until task 3 lands a base layout to extend. #}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Create a project</title>
+  </head>
+  <body>
+    <h1>Create a project</h1>
+
+    <form method="post">
+      {% csrf_token %}
+      {{ form.as_p }}
+      <button type="submit">Create project</button>
+    </form>
+
+    <p>You will be its facilitator, and you can invite the rest of the team with a link.</p>
+    <p><a href="{% url 'project-list' %}">Back to your projects</a></p>
+  </body>
+</html>

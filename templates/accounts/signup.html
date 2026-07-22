@@ -8,6 +8,7 @@
   <form method="post" class="mt-6 flex max-w-sm flex-col gap-2">
     {% csrf_token %}
     {{ form.as_p }}
+    <input type="hidden" name="next" value="{{ next }}">
     <button
       type="submit"
       class="mt-2 self-start rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white
@@ -19,6 +20,9 @@
 
   <p class="mt-6 text-sm text-slate-600">
     Already have an account?
-    <a href="{% url 'login' %}" class="text-brand-700 underline hover:text-brand-600">Log in</a>.
+    <a
+      href="{% url 'login' %}{% if next %}?next={{ next|urlencode }}{% endif %}"
+      class="text-brand-700 underline hover:text-brand-600"
+    >Log in</a>.
   </p>
 {% endblock %}

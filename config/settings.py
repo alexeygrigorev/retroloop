@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     # gives us a real queue comes from django-tasks-db.
     "django_tasks_db",
     "accounts",
+    "projects",
 ]
 
 MIDDLEWARE = [

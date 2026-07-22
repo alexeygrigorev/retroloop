@@ -10,6 +10,9 @@
   {% if user.is_authenticated %}
     {# Falls back to the username when the display name is blank. #}
     <span class="text-slate-600">{{ user }}</span>
+    <a href="{% url 'project-list' %}" class="text-brand-700 underline hover:text-brand-600">
+      Your projects
+    </a>
     <a href="{% url 'password_change' %}" class="text-brand-700 underline hover:text-brand-600">
       Change password
     </a>

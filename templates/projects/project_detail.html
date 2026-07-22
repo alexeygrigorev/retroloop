@@ -1,0 +1,47 @@
+{# Plain and unstyled until task 3 lands a base layout to extend. #}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ project.name }}</title>
+  </head>
+  <body>
+    <h1>{{ project.name }}</h1>
+
+    {% if messages %}
+      <ul>
+        {% for message in messages %}<li>{{ message }}</li>{% endfor %}
+      </ul>
+    {% endif %}
+
+    <h2>Members</h2>
+    <ul>
+      {% for membership in memberships %}
+        <li>{{ membership.user }} — {{ membership.get_role_display }}</li>
+      {% endfor %}
+    </ul>
+
+    <h2>Join link</h2>
+    <p><code>{{ join_url }}</code></p>
+    <p>
+      This link is the only thing anyone needs in order to join this project, so
+      share it only with the people who belong here.
+    </p>
+
+    {% if can_rotate %}
+      {# The button is hidden from a plain member as a courtesy; the view is
+         what refuses them. #}
+      <form method="post" action="{% url 'project-rotate-link' project.pk %}">
+        {% csrf_token %}
+        <button type="submit">Replace the join link</button>
+      </form>
+      <p>
+        Replacing the link breaks every copy already shared — old links stop
+        working for everyone, and people already in the project stay in it.
+      </p>
+    {% endif %}
+
+    <p><a href="{% url 'project-list' %}">Back to your projects</a></p>
+  </body>
+</html>
