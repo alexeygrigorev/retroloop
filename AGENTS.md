@@ -133,6 +133,13 @@ itself, so nothing the suite needs is assumed to be there.
   a built asset used to opt out the same way; they now build it and fail naming
   the command instead, and skip only where no npm exists to build it with (#54).
   A test that genuinely has to skip changes that gate in the same commit.
+- A test removed from collection fails the build too. A file that is never
+  collected writes no result at all, so the skip gate above cannot see it - an
+  `--ignore=` in `addopts` once produced a fully green run with the whole media
+  pipeline gone. So the number of tests that ran is checked against a floor,
+  `MINIMUM_TESTS` in `.github/workflows/ci.yml`. When the suite grows, raise it:
+  the failure prints the new number and it is one line. It is never lowered to
+  make a build pass.
 - A newer push to the same branch cancels the run it supersedes, so the run
   worth reading is always the one for the tip commit.
 - Reproduce a CI run locally with one command:

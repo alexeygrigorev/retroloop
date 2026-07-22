@@ -20,8 +20,11 @@ and a file that guards the gate is the last place to opt out of it.
 """
 
 import ast
+import os
 import re
+import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 from django.conf import settings
@@ -34,6 +37,10 @@ WORKFLOW = WORKFLOW_DIR / "ci.yml"
 ALLOWED_ACTIONS = {"actions/checkout", "actions/setup-node", "astral-sh/setup-uv"}
 
 USES = re.compile(r"uses:\s*(\S+)")
+
+#: The two gates that read the JUnit report, by step name.
+COUNT_GATE = "Fail if fewer tests ran than the floor"
+SKIP_GATE = "Fail if any test was skipped"
 
 
 def source() -> str:
@@ -57,6 +64,82 @@ def index_of(needle: str) -> int:
     position = text.find(needle)
     assert position != -1, f"{needle!r} does not appear in {WORKFLOW.name}"
     return position
+
+
+# --------------------------------------------------------------------------
+# Running a gate rather than reading it
+#
+# Issue #63's QA mutation-tested the assertions in this file and found three
+# that survived the behaviour being broken, because they matched a string
+# inside the step's own `::error::` text rather than the thing they claimed to
+# check. The gates added for #67 are therefore not read, they are *run*: the
+# step's script is lifted out of the workflow and executed against a JUnit
+# report written for the occasion. Break the gate and these fail.
+# --------------------------------------------------------------------------
+
+
+def step(name: str) -> str:
+    """One step of the job, as written, comments and all."""
+    text = source()
+    marker = f"- name: {name}\n"
+    start = text.find(marker)
+    assert start != -1, f"{WORKFLOW.name} has no step named {name!r}"
+
+    rest = text[start + len(marker) :]
+    following = re.search(r"\n {6}- (?:name|uses):", rest)
+    return marker + (rest[: following.start()] if following else rest)
+
+
+def gate_script(name: str) -> str:
+    """The python program a named step feeds to its interpreter."""
+    heredoc = re.search(r"<<'PY'\n(.*?)\n *PY *$", step(name), re.S | re.M)
+    assert heredoc, f"the {name!r} step runs no python heredoc"
+    return textwrap.dedent(heredoc.group(1))
+
+
+def junit_report(tests: int, skips: tuple[tuple[str, str], ...] = ()) -> str:
+    """A JUnit report of the shape pytest writes, with `tests` cases in it."""
+    cases = [
+        f'<testcase classname="tests.test_made_up" name="test_{number}" time="0.01" />'
+        for number in range(tests - len(skips))
+    ]
+    cases += [
+        f'<testcase classname="{node.rpartition("::")[0]}" name="{node.rpartition("::")[2]}"'
+        f' time="0.01"><skipped type="pytest.skip" message="{reason}">{reason}</skipped></testcase>'
+        for node, reason in skips
+    ]
+    body = "\n".join(cases)
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        f'<testsuites><testsuite name="pytest" errors="0" failures="0"'
+        f' skipped="{len(skips)}" tests="{tests}" time="1.0">\n{body}\n'
+        "</testsuite></testsuites>\n"
+    )
+
+
+def run_gate(name: str, tmp_path: Path, report: str | None) -> subprocess.CompletedProcess[str]:
+    """Run a gate's own script against a report, the way the job runs it."""
+    location = tmp_path / "junit.xml"
+    if report is not None:
+        location.write_text(report)
+
+    environment = dict(os.environ, JUNIT_REPORT=str(location))
+    if "MINIMUM_TESTS" in step(name):
+        environment["MINIMUM_TESTS"] = str(floor())
+
+    return subprocess.run(
+        [sys.executable, "-c", gate_script(name)],
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+
+def floor() -> int:
+    """The committed floor on the number of tests, read out of the workflow."""
+    declared = re.findall(r'MINIMUM_TESTS: "(\d+)"', source())
+    assert len(declared) == 1, f"the floor is declared {len(declared)} times, not once"
+    return int(declared[0])
 
 
 # --------------------------------------------------------------------------
@@ -355,6 +438,133 @@ def test_the_skip_gate_reports_the_node_id_and_the_reason() -> None:
 
 
 # --------------------------------------------------------------------------
+# A test removed from collection is red too — issue #67
+#
+# The skip gate reads `<skipped>` elements. A test that is never collected
+# writes no `<testcase>` at all, so it is invisible to that gate: QA put
+# `--ignore=tests/test_audio.py` in addopts and got a green run with a fifth of
+# the suite gone. The count of tests that ran is checked against a committed
+# floor as well, and the two gates are independent.
+# --------------------------------------------------------------------------
+
+
+def test_the_test_count_gate_runs_after_the_suite_and_reads_the_same_report() -> None:
+    assert index_of("uv run pytest") < index_of(COUNT_GATE)
+    assert "JUNIT_REPORT" in step(COUNT_GATE)
+    # The count comes off the report the suite wrote, not out of the pytest log,
+    # and it is the root element's own total rather than a tally of elements the
+    # gate happened to find.
+    assert 'get("tests"' in gate_script(COUNT_GATE)
+
+
+def test_the_floor_is_one_line_next_to_the_gate_that_reads_it() -> None:
+    block = step(COUNT_GATE)
+
+    # Declared once, in the step that uses it, on a line of its own.
+    assert re.search(r'\n +MINIMUM_TESTS: "\d+"\n', block), block
+    assert len(re.findall(r'MINIMUM_TESTS: "\d+"', source())) == 1
+
+    # And the comment beside it - not the failure message, the comment someone
+    # editing the number reads first - says which way the number may move.
+    comments = "\n".join(line for line in block.splitlines() if line.lstrip().startswith("#"))
+    assert "never lowered to make a build pass" in comments, comments
+    assert "deliberately" in comments, comments
+
+
+def test_the_floor_is_not_a_number_the_suite_would_clear_with_tests_missing() -> None:
+    """A floor of 1 would pass every mutilated run there is.
+
+    Every test function in `tests/` contributes at least one collected test, so
+    the number of them is a lower bound on an honest floor - and a floor set
+    below it would be one that a suite with whole files missing still clears.
+    """
+    functions = sum(
+        len(re.findall(r"^def test_", path.read_text(), re.M))
+        for path in sorted((BASE_DIR / "tests").glob("test_*.py"))
+    )
+
+    assert functions > 0
+    assert floor() >= functions, f"floor {floor()} is below the {functions} tests defined in tests/"
+
+
+def test_the_test_count_gate_fails_when_a_test_file_left_the_run(tmp_path: Path) -> None:
+    """The exact shape of QA's attack: fewer tests, none of them skipped."""
+    result = run_gate(COUNT_GATE, tmp_path, junit_report(floor() - 19))
+
+    assert result.returncode == 1, result
+    output = result.stdout + result.stderr
+    assert "::error::" in output, output
+    assert str(floor() - 19) in output and str(floor()) in output, output
+
+
+def test_the_test_count_gate_passes_a_full_run_and_a_grown_one(tmp_path: Path) -> None:
+    at_the_floor = run_gate(COUNT_GATE, tmp_path, junit_report(floor()))
+    assert at_the_floor.returncode == 0, at_the_floor
+
+    grown = run_gate(COUNT_GATE, tmp_path, junit_report(floor() + 40))
+    assert grown.returncode == 0, grown
+
+
+def test_the_test_count_gate_says_raising_the_floor_is_one_line(tmp_path: Path) -> None:
+    """The message has to be actionable by someone who has never read this file."""
+    result = run_gate(COUNT_GATE, tmp_path, junit_report(floor() - 1))
+    output = result.stdout + result.stderr
+
+    assert "MINIMUM_TESTS" in output, output
+    assert ".github/workflows/ci.yml" in output, output
+    assert "one line" in output, output
+    assert "never lowered" in output, output
+
+    # And a run that has outgrown the floor says what the new number would be.
+    grown = run_gate(COUNT_GATE, tmp_path, junit_report(floor() + 40))
+    assert f'MINIMUM_TESTS: "{floor() + 40}"' in grown.stdout, grown.stdout
+
+
+def test_the_test_count_gate_fails_when_pytest_wrote_no_report(tmp_path: Path) -> None:
+    result = run_gate(COUNT_GATE, tmp_path, None)
+
+    assert result.returncode != 0, result
+    assert "::error::" in result.stdout + result.stderr
+
+
+def test_the_skip_gate_still_fails_a_skipped_test(tmp_path: Path) -> None:
+    """#30's gate, run rather than read, so #67 cannot quietly have replaced it."""
+    report = junit_report(floor(), skips=(("tests.test_audio::test_probe", "ffmpeg missing"),))
+    result = run_gate(SKIP_GATE, tmp_path, report)
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, result
+    assert "tests.test_audio::test_probe" in output, output
+    assert "ffmpeg missing" in output, output
+
+
+def test_the_skip_gate_passes_a_clean_report(tmp_path: Path) -> None:
+    result = run_gate(SKIP_GATE, tmp_path, junit_report(floor()))
+
+    assert result.returncode == 0, result
+    assert "No test skipped." in result.stdout, result.stdout
+
+
+def test_the_two_gates_catch_different_things(tmp_path: Path) -> None:
+    """Neither gate covers the other, which is why both are here."""
+    lost = tmp_path / "lost"
+    lost.mkdir()
+    missing_tests = junit_report(floor() - 19)
+
+    # Tests gone from collection: nothing is skipped, so only the count sees it.
+    assert run_gate(SKIP_GATE, lost, missing_tests).returncode == 0
+    assert run_gate(COUNT_GATE, lost, missing_tests).returncode == 1
+
+    hidden = tmp_path / "hidden"
+    hidden.mkdir()
+    skipped = junit_report(floor(), skips=(("tests.test_audio::test_probe", "ffmpeg missing"),))
+
+    # The full suite ran and 1 test opted out: only the skip gate sees that.
+    assert run_gate(COUNT_GATE, hidden, skipped).returncode == 0
+    assert run_gate(SKIP_GATE, hidden, skipped).returncode == 1
+
+
+# --------------------------------------------------------------------------
 # The checks themselves
 # --------------------------------------------------------------------------
 
@@ -406,6 +616,16 @@ def test_agents_md_says_what_ci_runs_and_how_to_reproduce_it() -> None:
     reproduce = next(line for line in section.splitlines() if "uv run pytest -rs" in line)
     for command in ("npm ci", "npm run build:css", "npm run build:js"):
         assert command in reproduce, reproduce
+
+
+def test_agents_md_says_the_number_of_tests_has_a_floor_and_how_to_raise_it() -> None:
+    agents = (BASE_DIR / "AGENTS.md").read_text()
+    section = agents.split("\nCI\n", 1)[1]
+
+    assert "MINIMUM_TESTS" in section
+    assert "collection" in section
+    # Named the same way in the docs as in the file someone will go and edit.
+    assert ".github/workflows/ci.yml" in section
 
 
 def test_this_file_needs_no_yaml_parser_and_no_new_dependency() -> None:
