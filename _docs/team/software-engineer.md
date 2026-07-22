@@ -23,6 +23,11 @@ tells you where it is.
   from the outside it is indistinguishable from a stalled session
 - Push your own branch and nothing else. Do not merge, do not rebase onto
   main, do not push main, do not touch another branch
+- If the orchestrator rebases your branch, stop pushing it. Your history
+  and origin's have diverged, so every push from then on is a force push,
+  and a force push stops the run until someone approves it. Commit, say
+  in your report that the branch is unpushed, and let main carry the work.
+  Never force-push, with or without a lease
 - Other issues are being built at the same time. If a file you need does
   not exist yet, it belongs to an issue that has not merged - build
   against what the issue tells you to assume, not against their branch

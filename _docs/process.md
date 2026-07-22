@@ -165,6 +165,14 @@ and again after each round of QA fixes. A branch nobody can see is a
 branch nobody can review, and the whole wave's work is otherwise
 invisible until it merges.
 
+Once the orchestrator rebases a branch, that branch's history no longer
+matches the one on origin, and every later push from it is a force push
+- which stops and waits for a human. So after a rebase the engineer
+stops pushing and says so; the orchestrator merges and pushes main, and
+main carries the work. Nobody force-pushes to repair the branch. The
+stale copy on origin is superseded the moment main moves, and a stale
+branch costs nothing while a blocked push costs the whole run.
+
 Conflicts concentrate in a few shared files - `config/settings.py`,
 `config/urls.py`, `AGENTS.md`, `.env.example`, `templates/base.html`.
 The orchestrator resolves them at integration. An engineer who finds a
