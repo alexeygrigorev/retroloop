@@ -116,13 +116,21 @@ def board_bootstrap(user, retro: Retrospective) -> dict:
 
     `author=user` is also why anonymised cards cannot appear: #10 sets `author`
     to NULL at reveal, and a NULL author matches nobody.
+
+    A card is carried by its `public_id`, as a string, and never by its `pk` —
+    `_docs/decisions.md` item 9, and the same value under the same key as
+    #11's state endpoint sends. A card's identity therefore does not change
+    when the first poll replaces this bootstrap.
     """
     cards = Card.objects.filter(cycle=retro.cycle, author=user)
     return {
         "id": retro.pk,
         "stage": retro.stage,
         "version": retro.version,
-        "cards": [{"id": card.pk, "category": card.category, "text": card.text} for card in cards],
+        "cards": [
+            {"id": str(card.public_id), "category": card.category, "text": card.text}
+            for card in cards
+        ],
     }
 
 
