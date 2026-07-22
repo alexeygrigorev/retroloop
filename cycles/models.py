@@ -112,9 +112,14 @@ class FeedbackCycle(models.Model):
 
         A description of the row, not an access rule: who may add, edit or
         delete a card is `can_add_card`, `can_edit_card` and `can_delete_card`
-        in `projects/permissions.py`, which read the status themselves. This
-        stays because a template asks the same question of a cycle it is
-        rendering.
+        in `projects/permissions.py`, which read the status themselves. The card
+        page shows its Edit and Delete controls from those predicates, by way of
+        the per-card flags the view attaches to each card (#66).
+
+        No template and no view reads this. It survives because it is an honest
+        description of the cycle's state and #7's tests read it as one. A reader
+        added back here would be the window in `_docs/decisions.md` item 1
+        written in a second place, which is exactly what #66 removed.
         """
         return self.is_collecting
 
