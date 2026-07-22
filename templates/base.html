@@ -1,22 +1,28 @@
 {% load static %}<!doctype html>
-{# The page shell every template inherits: title, navigation, flash messages,
-   main content. `nav_actions` is deliberately empty here — it is the seam a
-   template fills to put controls in the navigation bar. base_app.html fills it
-   with the account controls, so no page has to know about them. #}
+{% comment %}
+  The page shell every template inherits: title, navigation, flash messages,
+  main content. `nav_actions` is deliberately empty here — it is the seam a
+  template fills to put controls in the navigation bar. base_app.html fills it
+  with the account controls, so no page has to know about them.
+{% endcomment %}
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Weekly Team Feedback{% endblock %}</title>
     <link rel="stylesheet" href="{% static 'css/app.css' %}">
-    {# Vendored, pinned, served from this project's own static files. Nothing on
-       the page may reach a third-party origin: #27 adds a CSP that forbids it. #}
+    {% comment %}
+      Vendored, pinned, served from this project's own static files. Nothing on
+      the page may reach a third-party origin: #27 adds a CSP that forbids it.
+    {% endcomment %}
     <script src="{% static 'vendor/htmx-2.0.10.min.js' %}" defer></script>
     <script src="{% static 'vendor/alpine-3.15.12.min.js' %}" defer></script>
     {% block extra_head %}{% endblock %}
   </head>
-  {# Every htmx request carries the CSRF token, so hx-post needs no per-form
-     wiring. Django rejects a POST without it with 403. #}
+  {% comment %}
+    Every htmx request carries the CSRF token, so hx-post needs no per-form
+    wiring. Django rejects a POST without it with 403.
+  {% endcomment %}
   <body
     class="min-h-screen bg-slate-50 text-slate-900 antialiased"
     hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'

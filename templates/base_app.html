@@ -1,8 +1,10 @@
 {% extends "base.html" %}
-{# base.html plus the account controls in the navigation bar. Application pages
-   extend this one, so the display name, the change-password link and the logout
-   form appear on every page instead of only on the homepage. A page that wants
-   the bare shell — nav_actions empty — extends base.html directly. #}
+{% comment %}
+  base.html plus the account controls in the navigation bar. Application pages
+  extend this one, so the display name, the change-password link and the logout
+  form appear on every page instead of only on the homepage. A page that wants
+  the bare shell — nav_actions empty — extends base.html directly.
+{% endcomment %}
 
 {% block nav_actions %}
   {% if user.is_authenticated %}

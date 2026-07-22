@@ -1,6 +1,8 @@
 {% extends "base_app.html" %}
-{# Placeholder homepage. Real screens arrive with their own issues; what this
-   page exists to show is that the layout, Tailwind, htmx and Alpine all work. #}
+{% comment %}
+  Placeholder homepage. Real screens arrive with their own issues; what this
+  page exists to show is that the layout, Tailwind, htmx and Alpine all work.
+{% endcomment %}
 
 {% block content %}
   <h1 class="text-2xl font-semibold tracking-tight">Weekly Team Feedback</h1>
@@ -32,9 +34,11 @@
   </section>
 {% endblock %}
 
-{# The htmx fragment. Django 6 template partials keep it in the page it belongs
-   to instead of a file of its own; the view renders "home.html#frontend_check"
-   and the response carries no layout. #}
+{% comment %}
+  The htmx fragment. Django 6 template partials keep it in the page it belongs
+  to instead of a file of its own; the view renders "home.html#frontend_check"
+  and the response carries no layout.
+{% endcomment %}
 {% partialdef frontend_check %}
   <div
     x-data="{ clicks: 0 }"
