@@ -119,6 +119,20 @@
     </form>
   {% endif %}
 
+  {% if can_hand_over_meeting %}
+    {% comment %}
+      Shown to this cycle's facilitator once the board has reached Discuss,
+      which is the first moment there is a meeting to hand over. The page
+      itself asks the same two questions again and refuses anyone who arrives
+      at the address without being shown this link.
+    {% endcomment %}
+    <p class="mt-6 text-sm">
+      <a href="{% url 'meeting-upload' retro.pk %}" class="link">
+        Hand over the meeting recording or transcript
+      </a>
+    </p>
+  {% endif %}
+
   <p class="mt-6 text-sm">
     <a href="{{ cycle.get_absolute_url }}" class="link">Back to the week</a>
   </p>

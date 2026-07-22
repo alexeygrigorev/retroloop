@@ -1,0 +1,91 @@
+{% extends "base_app.html" %}
+{% comment %}
+  Handing the meeting over: one file or one pasted transcript, and then the
+  progress panel, which keeps itself up to date over htmx until the work is
+  done or has failed.
+
+  The form is offered only from the Discuss stage on, and only while nothing is
+  already in flight. Both of those are decided in the view — this file hides a
+  control the server would refuse anyway, and hiding it is not what enforces it.
+{% endcomment %}
+
+{% block title %}The meeting — week of {{ cycle.week_start|date:'j F Y' }}{% endblock %}
+
+{% block content %}
+  <h1 class="page-heading">The meeting</h1>
+  <p class="mt-2 text-sm text-slate-600">
+    <a href="{{ project.get_absolute_url }}" class="link">{{ project.name }}</a>
+    —
+    <a href="{{ retro.get_absolute_url }}" class="link">the retrospective</a>
+    for the week of {{ cycle.week_start|date:'j F Y' }}
+  </p>
+
+  <section class="panel mt-8">
+    <h2 class="section-heading">What to hand over</h2>
+    {% comment %}
+      The steer the architecture asks for, with its reason. Transcription is
+      billed and capped per request, so a long video is split into chunks and
+      every split is a place a sentence — and, with speaker labels, a speaker —
+      can break across the boundary. Audio, or text you already have, avoids
+      all of it.
+    {% endcomment %}
+    <ul class="list-rows gap-2">
+      <li>
+        <strong>Best:</strong> the transcript, pasted in or as a file. Nothing
+        has to be transcribed, so it is done in one step and nothing can be
+        misheard.
+      </li>
+      <li>
+        <strong>Good:</strong> an audio recording. Recording audio only keeps
+        the file small and gives the transcription exactly what it needs.
+      </li>
+      <li>
+        <strong>Last resort:</strong> a 90-minute video. The picture is thrown
+        away before anything is transcribed, so it buys nothing and costs the
+        upload: a large file is split into chunks, and every split is a place a
+        sentence or a speaker change can be broken in half.
+      </li>
+    </ul>
+    <p class="mt-4 text-sm text-slate-600">
+      Accepted: audio ({{ audio_extensions }}), video ({{ video_extensions }})
+      and transcripts ({{ transcript_extensions }}). Anything else is refused
+      before it is uploaded. One file, up to {{ max_upload_label }}.
+    </p>
+    <p class="mt-2 text-sm text-slate-600">
+      The recording is deleted as soon as it has been read, whether that worked
+      or not. Nothing is kept but the text.
+    </p>
+  </section>
+
+  {% if not upload_is_open %}
+    <p data-upload-closed="true" class="mt-6 text-sm text-slate-600">
+      The retrospective has not reached its discussion yet, so there is no
+      meeting to hand over. Advance it to Discuss first.
+    </p>
+  {% elif can_upload %}
+    <section class="panel mt-8">
+      <h2 class="section-heading">Hand it over</h2>
+      <form
+        method="post"
+        enctype="multipart/form-data"
+        action="{{ request.path }}"
+        class="form-fields"
+      >
+        {% csrf_token %}
+        {{ form.as_div }}
+        <button type="submit" class="btn-primary">Hand over the meeting</button>
+      </form>
+    </section>
+  {% else %}
+    <p data-upload-busy="true" class="mt-6 text-sm text-slate-600">
+      This meeting is with the system already. There is nothing to add while it
+      works.
+    </p>
+  {% endif %}
+
+  {% include "meetings/meeting_status.html" %}
+
+  <p class="mt-6 text-sm">
+    <a href="{{ retro.get_absolute_url }}" class="link">Back to the retrospective</a>
+  </p>
+{% endblock %}

@@ -13,7 +13,8 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
 from cycles.models import Card, FeedbackCycle
-from projects.permissions import can_advance_stage
+from meetings.services import upload_is_open
+from projects.permissions import can_advance_stage, can_upload_recording
 from projects.views import member_or_404
 from retro.models import Retrospective
 from retro.services import (
@@ -59,6 +60,11 @@ def retro_detail(request: HttpRequest, pk: int) -> HttpResponse:
             # Two questions, answered here rather than in the template: may this
             # person advance it, and is there anywhere left to advance to.
             "can_advance": can_advance_stage(request.user, retro) and not retro.is_complete,
+            # The meeting is handed over from DISCUSS on, by this cycle's
+            # facilitator. Both halves are asked again by the page the link
+            # points at; this only decides whether to show the link.
+            "can_hand_over_meeting": can_upload_recording(request.user, retro)
+            and upload_is_open(retro),
             "next_stage_label": _stage_label(retro.next_stage),
             # What the React island is handed, rendered into the page with
             # `json_script`. See board_bootstrap() for why it is this and no more.
