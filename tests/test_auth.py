@@ -333,9 +333,14 @@ def test_env_example_gains_no_new_variable() -> None:
 
     The set is exact rather than a search for `EMAIL_`, so a variable added for
     any other reason still has to be written down here in the same commit.
-    `OPENAI_API_KEY` is the one that has been: #21 sends the meeting audio for
+    `OPENAI_API_KEY` is one that has been: #21 sends the meeting audio for
     transcription and AGENTS.md requires the credential to come from the
-    environment with a line in this file.
+    environment with a line in this file. `SCRATCH_DIR` is the other: #56 wrote
+    down the setting the media pipeline had been reading without an example
+    line. Both were added by extending this set, never by relaxing it into a
+    subset or superset check - the point of the test is that a new name cannot
+    arrive unnoticed, and a `names <= expected` or `expected <= names` test
+    would let exactly that happen.
     """
     text = (Path(settings.BASE_DIR) / ".env.example").read_text()
     names = {
@@ -349,6 +354,7 @@ def test_env_example_gains_no_new_variable() -> None:
         "SECRET_KEY",
         "ALLOWED_HOSTS",
         "DATABASE_URL",
+        "SCRATCH_DIR",
         "OPENAI_API_KEY",
     }
     assert not any(name.startswith("EMAIL") for name in names)
