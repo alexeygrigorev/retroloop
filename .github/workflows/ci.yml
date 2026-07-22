@@ -171,6 +171,12 @@ jobs:
         # already done, so no second install step appears here.
         run: npm run build:js
 
+      - name: QA PROOF, reverted next commit, move the built bundle aside (#63)
+        # Leaves a manifest that parses and names an entry, with the file it
+        # names no longer on disk - the one failure path the build step itself
+        # cannot catch. Renamed, not deleted.
+        run: mv static/board/assets/*.js "$RUNNER_TEMP/"
+
       - name: Check the bundle and its manifest were built
         # The manifest path is read out of config/settings.py rather than
         # written down a second time, so this step checks the very file
