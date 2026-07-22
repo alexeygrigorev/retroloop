@@ -1,39 +1,41 @@
-{# Plain and unstyled until task 3 lands a base layout to extend. #}
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{ project.name }}</title>
-  </head>
-  <body>
-    <h1>{{ project.name }}</h1>
+{% extends "base_app.html" %}
 
-    {% if messages %}
-      <ul>
-        {% for message in messages %}<li>{{ message }}</li>{% endfor %}
-      </ul>
-    {% endif %}
+{% comment %}
+  Messages are not looped over here. base.html renders the flash region for
+  every page, so joining the project and replacing the join link both report
+  themselves in the styled success box instead of as a bare bullet.
+{% endcomment %}
 
-    <h2>Members</h2>
-    <ul>
+{% block title %}{{ project.name }}{% endblock %}
+
+{% block content %}
+  <h1 class="text-2xl font-semibold tracking-tight">{{ project.name }}</h1>
+
+  <section class="mt-8 rounded-lg border border-slate-200 bg-white p-4">
+    <h2 class="text-lg font-medium">Members</h2>
+    <ul class="mt-2 flex flex-col gap-1 text-sm text-slate-700">
       {% for membership in memberships %}
         <li>{{ membership.user }} — {{ membership.get_role_display }}</li>
       {% endfor %}
     </ul>
+  </section>
 
-    <h2>Feedback cycles</h2>
+  <section class="mt-8 rounded-lg border border-slate-200 bg-white p-4">
+    <h2 class="text-lg font-medium">Feedback cycles</h2>
     {% if cycles %}
-      <ul>
+      <ul class="mt-2 flex flex-col gap-1 text-sm text-slate-700">
         {% for cycle in cycles %}
           <li>
-            <a href="{{ cycle.get_absolute_url }}">Week of {{ cycle.week_start|date:'j F Y' }}</a>
+            <a
+              href="{{ cycle.get_absolute_url }}"
+              class="text-brand-700 underline hover:text-brand-600"
+            >Week of {{ cycle.week_start|date:'j F Y' }}</a>
             — {{ cycle.get_status_display }}
           </li>
         {% endfor %}
       </ul>
     {% else %}
-      <p>No cycle has been opened for this project yet.</p>
+      <p class="mt-2 text-sm text-slate-600">No cycle has been opened for this project yet.</p>
     {% endif %}
 
     {% if can_open_cycle %}
@@ -42,16 +44,29 @@
         them. Keep this a one-line `{# #}` or a `{% comment %}` block — a
         two-line `{# #}` is not a comment and renders as page text.
       {% endcomment %}
-      <p><a href="{% url 'cycle-create' project.pk %}">Open a feedback cycle</a></p>
+      <p class="mt-4">
+        <a
+          href="{% url 'cycle-create' project.pk %}"
+          class="rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700"
+        >Open a feedback cycle</a>
+      </p>
     {% endif %}
+  </section>
 
-    <h2>Join link</h2>
-    <p><code>{{ join_url }}</code></p>
-    <p>
+  <section class="mt-8 rounded-lg border border-slate-200 bg-white p-4">
+    <h2 class="text-lg font-medium">Join link</h2>
+    {% comment %}
+      The token makes this a single unbreakable string longer than the content
+      column, so it is told to break inside itself rather than widen the page.
+    {% endcomment %}
+    <p class="mt-2">
+      <code class="block rounded-md border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-sm break-all">{{ join_url }}</code>
+    </p>
+    <p class="mt-2 text-sm text-slate-600">
       This link is the only thing anyone needs in order to join this project, so
       share it only with the people who belong here.
     </p>
-    <p>
+    <p class="mt-2 text-sm text-slate-600">
       Replacing the link breaks every copy already shared — old links stop
       working for everyone, and people already in the project stay in it.
     </p>
@@ -63,12 +78,21 @@
         lexer matches `{#.*?#}` without DOTALL, so a two-line `{# #}` is not a
         comment at all and renders as page text.
       {% endcomment %}
-      <form method="post" action="{% url 'project-rotate-link' project.pk %}">
+      <form method="post" action="{% url 'project-rotate-link' project.pk %}" class="mt-4">
         {% csrf_token %}
-        <button type="submit">Replace the join link</button>
+        <button
+          type="submit"
+          class="rounded-md border border-slate-300 px-2 py-1 text-sm hover:border-slate-400 hover:bg-slate-100"
+        >
+          Replace the join link
+        </button>
       </form>
     {% endif %}
+  </section>
 
-    <p><a href="{% url 'project-list' %}">Back to your projects</a></p>
-  </body>
-</html>
+  <p class="mt-6 text-sm">
+    <a href="{% url 'project-list' %}" class="text-brand-700 underline hover:text-brand-600">
+      Back to your projects
+    </a>
+  </p>
+{% endblock %}
