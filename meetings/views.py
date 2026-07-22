@@ -164,6 +164,11 @@ def _status_context(record: MeetingRecord | None) -> dict:
         # Polling stops at READY and at FAILED, because neither moves again.
         "polling": record is not None and not record.is_final,
         "failed": record is not None and record.status == MeetingRecord.Status.FAILED,
+        # Normally false, and false for every record whose media was deleted as
+        # the pipeline ended. True when the filesystem refused the unlink, which
+        # is a recording of a private meeting still sitting on the volume: the
+        # page says so rather than letting a status imply it is gone (#71).
+        "retained": record is not None and record.media_is_retained,
     }
 
 

@@ -43,6 +43,23 @@
       </p>
     {% endif %}
 
+    {% if retained %}
+      {% comment %}
+        The unlink was refused by the filesystem, so the recording is still on
+        the volume after the pipeline finished with it. `_docs/decisions.md`
+        item 6 says it should not be, and the row honestly records that it is —
+        this is that fact on the page, so no status here implies the media is
+        gone when it is not (#71). `manage.py sweep_media` is what comes back
+        for it; there is nothing for the facilitator to do, and the sentence
+        says so rather than offering a button that would not work.
+      {% endcomment %}
+      <p class="mt-2 text-sm text-red-900">
+        The recording could not be deleted from the shared volume when the
+        attempt ended, so it is still there. It has been logged and it is
+        collected automatically; nothing needs doing here.
+      </p>
+    {% endif %}
+
     <dl class="list-rows">
       <div class="flex gap-2">
         <dt class="font-medium text-slate-700">Handed over</dt>

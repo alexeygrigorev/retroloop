@@ -43,6 +43,17 @@ class MeetingRecord(models.Model):
     #: The statuses the pipeline never moves out of, so the page stops polling.
     FINAL_STATUSES: ClassVar[tuple[str, ...]] = (Status.READY, Status.FAILED)
 
+    #: The statuses a record only reaches once the pipeline has finished with
+    #: the media, either way. Two things read them: the `finally` in
+    #: `meetings/pipeline.py`, which marks a record that reached none of them
+    #: failed rather than leaving it polling for ever, and `media_is_retained`
+    #: below.
+    PAST_MEDIA_STATUSES: ClassVar[tuple[str, ...]] = (
+        Status.EXTRACTING,
+        Status.READY,
+        Status.FAILED,
+    )
+
     # Many per retrospective over time, at most one of them live: re-uploading
     # after a failure is the documented way to recover, so a failed row stays
     # where it is and the next attempt is a new row rather than an overwrite.
@@ -109,6 +120,24 @@ class MeetingRecord(models.Model):
     def is_final(self) -> bool:
         """Whether the pipeline is done with this record, either way."""
         return self.status in self.FINAL_STATUSES
+
+    @property
+    def media_is_retained(self) -> bool:
+        """The pipeline has finished with the recording and it is still on disk.
+
+        Normally impossible: the media is deleted in a `finally` block and both
+        fields are written in the same step, so a record past the media has a
+        null `temp_path` and a `media_deleted_at`. It becomes true when the
+        filesystem refuses the unlink — the row is left saying the file is still
+        there, because that is what is true, and the alternative is a record
+        claiming a recording of a private meeting was destroyed when it was not
+        (#71).
+
+        Two things read it. The page says so, so the retention is visible rather
+        than only logged; and `meetings/sweeper.py` collects exactly these,
+        which is what comes back for a refused unlink.
+        """
+        return self.status in self.PAST_MEDIA_STATUSES and bool(self.temp_path)
 
     @property
     def skips_transcription(self) -> bool:
