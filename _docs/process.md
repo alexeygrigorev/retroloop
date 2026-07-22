@@ -98,6 +98,13 @@ config.settings_test as s; print(s.DATABASES['default']['NAME'])"`
 prints the worktree's own database. Check it before an agent starts, not
 after it reports a mysterious failure.
 
+One suite at a time inside a worktree. The database is per worktree, not
+per process, so two `pytest` runs started together in the same worktree
+drop and recreate one `test_*` database underneath each other. It
+produces a scatter of failures and errors that look like a real
+regression and are not - two engineers have now lost time to it. A run
+that fails strangely gets repeated alone before it is believed.
+
 Postgres itself stays a single container. Databases inside it are cheap;
 a second container is not.
 
