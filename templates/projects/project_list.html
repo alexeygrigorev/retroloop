@@ -1,31 +1,39 @@
-{# Plain and unstyled until task 3 lands a base layout to extend. #}
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Your projects</title>
-  </head>
-  <body>
-    <h1>Your projects</h1>
+{% extends "base_app.html" %}
 
-    {% if messages %}
-      <ul>
-        {% for message in messages %}<li>{{ message }}</li>{% endfor %}
-      </ul>
-    {% endif %}
+{% comment %}
+  Messages are not looped over here. base.html renders the flash region for
+  every page, so "You have joined …" arrives in the styled success box instead
+  of as a bare bullet in a list of its own.
+{% endcomment %}
 
-    {% if projects %}
-      <ul>
-        {% for project in projects %}
-          <li><a href="{{ project.get_absolute_url }}">{{ project.name }}</a></li>
-        {% endfor %}
-      </ul>
-    {% else %}
-      <p>You are not a member of any project yet.</p>
-    {% endif %}
+{% block title %}Your projects{% endblock %}
 
-    <p><a href="{% url 'project-create' %}">Create a project</a></p>
-    <p><a href="{% url 'home' %}">Home</a></p>
-  </body>
-</html>
+{% block content %}
+  <h1 class="text-2xl font-semibold tracking-tight">Your projects</h1>
+
+  {% if projects %}
+    <ul class="mt-6 flex flex-col gap-2">
+      {% for project in projects %}
+        <li class="rounded-lg border border-slate-200 bg-white p-4">
+          <a
+            href="{{ project.get_absolute_url }}"
+            class="text-brand-700 underline hover:text-brand-600"
+          >{{ project.name }}</a>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="mt-2 text-slate-600">You are not a member of any project yet.</p>
+  {% endif %}
+
+  <p class="mt-6">
+    <a
+      href="{% url 'project-create' %}"
+      class="rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700"
+    >Create a project</a>
+  </p>
+
+  <p class="mt-6 text-sm">
+    <a href="{% url 'home' %}" class="text-brand-700 underline hover:text-brand-600">Home</a>
+  </p>
+{% endblock %}

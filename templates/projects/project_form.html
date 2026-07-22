@@ -1,21 +1,29 @@
-{# Plain and unstyled until task 3 lands a base layout to extend. #}
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Create a project</title>
-  </head>
-  <body>
-    <h1>Create a project</h1>
+{% extends "base_app.html" %}
 
-    <form method="post">
-      {% csrf_token %}
-      {{ form.as_p }}
-      <button type="submit">Create project</button>
-    </form>
+{% block title %}Create a project{% endblock %}
 
-    <p>You will be its facilitator, and you can invite the rest of the team with a link.</p>
-    <p><a href="{% url 'project-list' %}">Back to your projects</a></p>
-  </body>
-</html>
+{% block content %}
+  <h1 class="text-2xl font-semibold tracking-tight">Create a project</h1>
+
+  <form method="post" class="mt-6 flex max-w-sm flex-col gap-2">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button
+      type="submit"
+      class="mt-2 self-start rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white
+             hover:bg-brand-700"
+    >
+      Create project
+    </button>
+  </form>
+
+  <p class="mt-6 text-sm text-slate-600">
+    You will be its facilitator, and you can invite the rest of the team with a link.
+  </p>
+
+  <p class="mt-6 text-sm">
+    <a href="{% url 'project-list' %}" class="text-brand-700 underline hover:text-brand-600">
+      Back to your projects
+    </a>
+  </p>
+{% endblock %}
