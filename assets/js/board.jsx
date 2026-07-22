@@ -13,6 +13,9 @@
 // #14 replaces this component outright.
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
+// TEMPORARY, reverted by the next commit: proof for issue #63 that a broken
+// bundle build turns the job red. This module does not exist.
+import { nothing } from "./this-module-does-not-exist.js";
 
 /** The element the board occupies. Empty in the page source, filled here. */
 const MOUNT_ID = "retro-board";
