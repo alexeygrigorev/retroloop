@@ -652,6 +652,10 @@ def test_the_page_wires_create_edit_and_delete_to_htmx(
     assert f'hx-get="{edit_url(card)}"' in html
     assert f'hx-post="{delete_url(card)}"' in html
     assert f'hx-target="#card-{card.pk}"' in html
+    # The exact strings the closed-cycle test asserts the absence of, so that
+    # test cannot quietly pass because the markup was reworded underneath it.
+    assert ">Edit</button>" in html
+    assert ">Delete</button>" in html
 
 
 @pytest.mark.django_db
@@ -928,8 +932,8 @@ def test_a_closed_cycle_offers_no_control_that_would_change_anything(
     assert create_url(cycle) not in html
     assert edit_url(card) not in html
     assert delete_url(card) not in html
-    assert ">Edit<" not in html
-    assert ">Delete<" not in html
+    assert ">Edit</button>" not in html
+    assert ">Delete</button>" not in html
 
 
 @pytest.mark.django_db
