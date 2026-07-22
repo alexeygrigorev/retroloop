@@ -1,0 +1,44 @@
+[project]
+name = "project-feedback"
+version = "0.1.0"
+description = "Weekly team feedback tool"
+requires-python = "==3.14.*"
+dependencies = [
+    "django==6.0.7",
+    "psycopg[binary]==3.3.4",
+    "dj-database-url==3.1.2",
+    "gunicorn==26.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "pytest-django==4.12.0",
+    "ruff==0.15.21",
+]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings_test"
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+extend-exclude = ["*/migrations/*"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "DJ",   # flake8-django
+    "C4",   # comprehensions
+    "RUF",  # ruff-specific
+]
+
+[tool.ruff.format]
+quote-style = "double"
