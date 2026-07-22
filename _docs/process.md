@@ -116,6 +116,17 @@ run, a build. Poll it with a ceiling, and if it never arrives say so.
 "Did not recover within two minutes" is a finding, and often a FAIL.
 Silence is not.
 
+This binds the orchestrator too. A suite that is killed for running
+long does not necessarily stop - the `pytest` child can outlive the
+command that launched it, still holding its `test_*` database. Starting
+a second run then is the same self-collision, and it produces a screen
+of errors that looks like the branch is broken when it is not. The
+orchestrator lost time to exactly this. Before starting a run in a
+worktree, confirm no `pytest` is already alive in it (`pgrep -af
+pytest`); a strange mass failure is repeated once, alone and clean,
+before it is believed - the same rule the engineers get, applied to
+integration.
+
 Postgres itself stays a single container. Databases inside it are cheap;
 a second container is not.
 
