@@ -75,6 +75,26 @@ sharing one `DATABASE_URL` will drop each other's test database in the
 middle of a run, and the failures look like impossible bugs in the code
 rather than what they are.
 
+There is a catch worth knowing about. A real environment variable beats
+the `.env` loader, by design - that is what lets containers and CI ship
+no `.env` at all. So if the terminal that launched the session exports
+`DATABASE_URL`, as this one does, it silently shadows every worktree's
+`.env` and puts all of them back on one database.
+
+Two things guard against that:
+
+- Commands are run with the database named explicitly:
+  `DATABASE_URL=postgres://postgres:postgres@localhost:5432/feedback_wt<issue> uv run pytest`
+- Each worktree's `.venv` carries an untracked `sitecustomize.py` that
+  reads that worktree's `.env` and pins `DATABASE_URL` before Django
+  starts. Python imports it automatically, so a forgotten prefix costs
+  nothing
+
+The setup is not complete until `uv run python -c "import
+config.settings_test as s; print(s.DATABASES['default']['NAME'])"`
+prints the worktree's own database. Check it before an agent starts, not
+after it reports a mysterious failure.
+
 Postgres itself stays a single container. Databases inside it are cheap;
 a second container is not.
 
