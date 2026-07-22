@@ -180,6 +180,11 @@ jobs:
           ffmpeg -version
           ffprobe -version
 
+      - name: QA probe - hide ffmpeg so the audio skipif fires
+        run: |
+          sudo mv /usr/local/bin/ffmpeg /usr/local/bin/ffmpeg-hidden-by-qa
+          sudo mv /usr/local/bin/ffprobe /usr/local/bin/ffprobe-hidden-by-qa
+
       - name: Run the test suite
         # -rs so the log names every skip and its reason, and a JUnit report for
         # the gate below.
