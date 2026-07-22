@@ -23,10 +23,13 @@ The third is that the build must fail loudly. A missing manifest renders no
 `<script>` at all: it raises, naming the command to run. That is asserted by
 driving the page with the manifest pointed at a file that is not there.
 
-The suite itself runs without Node — `config/settings_test.py` points
-`VITE_MANIFEST` at a checked-in fixture, the same way the suite does not need
-`npm run build:css` to have been run. The tests that need the real build point
-the setting back at `static/board/` and skip when it has not been built.
+The suite itself renders pages without Node — `config/settings_test.py` points
+`VITE_MANIFEST` at a checked-in fixture, the same way nothing here needs
+`npm run build:css` to have been run first. The tests that need the *real* build
+point the setting back at `static/board/` and ask for the `built_island` fixture,
+which builds it and fails naming `npm run build:js` when that does not work. They
+no longer skip when the build is absent: a skip made a missing build look like a
+passing run (#54).
 """
 
 import json
@@ -196,9 +199,11 @@ def test_the_built_bundle_is_git_ignored() -> None:
     assert "/static/board/" in ignored
 
 
-def test_collectstatic_picks_up_the_bundle_and_the_manifest(tmp_path: Path) -> None:
-    if not BUILT_MANIFEST.is_file():
-        pytest.skip("island not built yet — run `npm run build:js`")
+def test_collectstatic_picks_up_the_bundle_and_the_manifest(
+    built_island: Path, tmp_path: Path
+) -> None:
+    """The `built_island` fixture builds it; nothing here skips past it (#54)."""
+    assert built_island == BUILT_MANIFEST
 
     with override_settings(STATIC_ROOT=tmp_path / "staticfiles"):
         call_command("collectstatic", "--noinput", verbosity=0)
@@ -327,11 +332,11 @@ def test_the_page_fails_loudly_instead_of_serving_a_broken_script_tag(
 
 
 @pytest.mark.django_db
-def test_the_page_renders_a_script_tag_matching_the_built_manifest_entry(as_viewer, retro) -> None:
-    if not BUILT_MANIFEST.is_file():
-        pytest.skip("island not built yet — run `npm run build:js`")
-
-    built = json.loads(BUILT_MANIFEST.read_text())[ENTRY]["file"]
+def test_the_page_renders_a_script_tag_matching_the_built_manifest_entry(
+    as_viewer, retro, built_island: Path
+) -> None:
+    """The `built_island` fixture builds it; nothing here skips past it (#54)."""
+    built = json.loads(built_island.read_text())[ENTRY]["file"]
 
     with override_settings(VITE_MANIFEST=BUILT_MANIFEST):
         body = as_viewer.get(detail_url(retro)).content.decode()

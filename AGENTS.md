@@ -15,7 +15,10 @@ Commands
 - `uv run manage.py migrate` - apply migrations
 - `uv run manage.py db_worker` - background worker, without Compose. Add
   `--batch` to drain the queue once and exit
-- `uv run pytest` - the whole suite
+- `uv run pytest` - the whole suite. The tests that read a built asset build it
+  first, once per session, so a fresh checkout does not have to remember the npm
+  commands below; a build that does not produce its file fails the run, naming
+  the command to rerun
 - `uv run pytest tests/test_home.py` - one test file
 - `uv run ruff check . && uv run ruff format --check .` - lint and format check,
   run it before committing
@@ -109,15 +112,16 @@ itself, so nothing the suite needs is assumed to be there.
 
 - A skipped test fails the build. The suite writes a JUnit report and a step
   after it fails the job when any test skipped, printing the node id and the
-  reason. A skip is how this project's two silent opt-outs - the collectstatic
-  test and all of `tests/test_audio.py` without ffmpeg - would otherwise leave a
-  broken run reading green. A test that genuinely has to skip changes that gate
-  in the same commit.
+  reason. A skip is how a silent opt-out - all of `tests/test_audio.py` without
+  ffmpeg - would otherwise leave a broken run reading green. The tests that read
+  a built asset used to opt out the same way; they now build it and fail naming
+  the command instead, and skip only where no npm exists to build it with (#54).
+  A test that genuinely has to skip changes that gate in the same commit.
 - A newer push to the same branch cancels the run it supersedes, so the run
   worth reading is always the one for the tip commit.
 - Reproduce a CI run locally with one command:
   `uv sync --locked && npm ci && npm run build:css && npm run build:js && uv run ruff check . && uv run ruff format --check . && uv run manage.py makemigrations --check --dry-run && uv run pytest -rs`
   The `-rs` is the point: it lists every skip, which CI turns into a failure.
-  `npm run build:js` is part of it for the same reason: two tests read the real
-  manifest and skip without it, so a local run that omits the build reports two
-  skips that CI counts as failures.
+  `npm run build:css` and `npm run build:js` are part of it because CI builds
+  both assets as steps of its own and checks what they wrote, before the suite
+  runs at all - it does not lean on the suite to build them.
