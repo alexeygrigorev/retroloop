@@ -69,6 +69,7 @@ INSTALLED_APPS = [
     "projects",
     "cycles",
     "retro",
+    "board",
     "meetings",
 ]
 

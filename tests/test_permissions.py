@@ -668,7 +668,7 @@ def test_authority_over_a_retrospective_is_per_cycle_not_per_project() -> None:
 # One module, and no rule outside it
 # --------------------------------------------------------------------------
 
-APP_PACKAGES = ("accounts", "projects", "cycles", "retro")
+APP_PACKAGES = ("accounts", "projects", "cycles", "retro", "board")
 
 PERMISSIONS_PATH = BASE_DIR / "projects" / "permissions.py"
 
