@@ -246,6 +246,47 @@ jobs:
         # the gate below.
         run: uv run pytest -rs --junitxml="$JUNIT_REPORT"
 
+      - name: Fail if fewer tests ran than the floor
+        # The skip gate below reads <skipped> elements, and a test that is never
+        # collected writes no <testcase> at all - so removing a whole file from
+        # collection is invisible to it. QA proved that: `--ignore=tests/...` in
+        # addopts produced a fully green run with a fifth of the suite gone. The
+        # count is therefore checked as well, against a floor committed to this
+        # file. The two gates are independent and neither replaces the other.
+        env:
+          # The floor: the number of tests this suite is known to run. When the
+          # suite genuinely grows the number is raised deliberately, in this one
+          # line. It is never lowered to make a build pass. A run that reports
+          # fewer tests than this has lost tests, and losing tests is the
+          # failure being caught here, not a reason to edit the number down.
+          MINIMUM_TESTS: "1017"
+        run: |
+          python3 - <<'PY'
+          import os
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path(os.environ["JUNIT_REPORT"])
+          floor = int(os.environ["MINIMUM_TESTS"])
+          if not report.is_file():
+              sys.exit(f"::error::{report} is missing - pytest wrote no report.")
+
+          root = ET.parse(report).getroot()
+          ran = sum(int(suite.get("tests", 0)) for suite in root.iter("testsuite"))
+          if ran < floor:
+              print(f"::error::{ran} test(s) ran, below the floor of {floor}. Tests left the run.")
+              print("  A test dropped from collection writes no result at all, so the skip")
+              print("  gate cannot see it - this count is what catches it. Find the tests.")
+              print("  MINIMUM_TESTS in .github/workflows/ci.yml is the floor. Raising it")
+              print("  is that one line; it is never lowered to make a build pass.")
+              sys.exit(1)
+
+          print(f"{ran} test(s) ran, floor {floor}.")
+          if ran > floor:
+              print(f"The suite has grown. Raise the floor in one line: MINIMUM_TESTS: \"{ran}\".")
+          PY
+
       - name: Fail if any test was skipped
         # A skipped test is a failed test here. Both of this project's silent
         # opt-outs - the collectstatic test and all of tests/test_audio.py -
