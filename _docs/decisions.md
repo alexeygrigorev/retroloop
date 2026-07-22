@@ -146,3 +146,64 @@ owner's call. This decision is worth making either way that one goes: if that
 route is accepted as a stated limit, this one is still the cheaper attack,
 because it needs no database access; if it is closed, an id sequence in a payload
 would become the shortest way back to the same ordering.
+
+## 10. A card is never attributed on screen; a viewer sees only which cards are their own
+
+No screen that shows a member a card they did not write says who wrote it, and
+none says whether it was written anonymously. No display name, no initials, no
+avatar, no "by" line, no "Anonymous" label, no `is_anonymous` in any payload. A
+revealed card is a category and a text, and every card on the board looks the
+same as every other.
+
+One exception, and it is the viewer's own cards: a surface may mark a card as
+the viewer's own when the server can see that they wrote it and did not mark it
+anonymous. The mark is computed server-side from `author_id` and
+`is_anonymous`, it is never applied to a card its author marked anonymous, and
+its value for a given card and viewer does not change at the reveal.
+
+Why: naming the authors of the attributed cards identifies the anonymous ones by
+elimination, and it does so on a screen, with no database access. Item 3a keeps
+"who submitted and who did not" on the summary, deliberately, because a yes/no is
+harmless on its own. It stops being harmless the moment the board says which
+members wrote which cards: a member who shows as having submitted and whose name
+is on no card wrote only anonymous ones, and where the cycle holds a single
+anonymous card that is a name. That is exactly the arithmetic item 3a exists to
+prevent, arrived at from two screens a member is entitled to open rather than
+from two tables. Item 3 is only worth what the screens around it leave standing.
+
+The anonymity flag goes with the names for the same reason at one remove. The
+partition — which of these cards were written anonymously — is the first input
+every re-identification route needs; published, it is what a name, a count or a
+timestamp then attaches a person to. Withheld, a member holds only the anonymity
+set of the whole cycle. #11 already ships no `is_anonymous`, and this says that
+was the right call rather than an accident of a payload written before #12.
+
+Why the own-card mark is free: it restates a fact only the viewer already holds.
+They wrote the card, they recognise its text, and they ticked or did not tick the
+box. It tells them nothing about anybody else, and it cannot be pooled into
+something worse — a group of n−1 members can already identify the last member's
+cards by recognising their own texts, mark or no mark. It excludes the viewer's
+own anonymous cards, so a projected board cannot show the room which card the
+facilitator wrote anonymously; after the reveal the server could not answer that
+question anyway, which is item 3 working as intended.
+
+Cost accepted: nobody can point at the board and say "that one was mine" to
+anyone but themselves, and thanking someone for a good point happens out loud in
+the meeting instead of on the screen. A team that wanted attributed cards to
+carry names is being told they cannot have both that and anonymity in the same
+cycle. And "this card was written anonymously" is not something the room can
+read off the board — it is invisible, not labelled.
+
+Scope: cards, and every surface that renders another member's card — the board
+(#14), the mutation responses (#12), the summary (#25) and anything later. #16's
+notes are not affected: a note is always attributed and has no anonymous
+alternative, so naming its author eliminates nothing. #25's criteria currently
+promise names on notes (fine) and an "Anonymous" label on cards (not fine, per
+this item); it is flagged there and needs a grooming pass before it is picked up.
+The author's own pre-reveal card list from #8 is untouched — it shows the viewer
+only cards they wrote.
+
+This does not touch item 3a, and does not depend on how #69 is answered. It
+removes one input from that arithmetic and adds none; whichever way `card_count`
+and `created_at` go, a name on a card would be the shortest route back to the
+same identification and would need no database access to walk.
