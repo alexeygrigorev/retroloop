@@ -9,9 +9,12 @@ Labels
 
 Background
 
+- `_docs/decisions.md` - the calls already made, with reasons. Read it before
+  grooming or implementing, and do not reopen a decision without changing it
+  there first
 - `_docs/outdated/` holds the plan, architecture, and original task list. They
-  are reference, not the backlog - where an issue and a doc disagree the issue
-  wins, and the issue says why
+  are reference, not the backlog - where they disagree with `decisions.md` or
+  an issue, they lose
 
 Roles
 
