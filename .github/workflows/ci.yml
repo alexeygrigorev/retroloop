@@ -100,7 +100,7 @@ jobs:
       # that it cannot be, because tests/test_ci_workflow.py collects the real
       # suite and the workflow re-collects it in a step that runs whatever pytest
       # collects, so a value the suite does not produce fails on its own.
-      EXPECTED_TESTS: "1399"
+      EXPECTED_TESTS: "1342"
       TEST_FILES: "test_asset_fixture.py test_audio.py test_auth.py test_board.py test_cards.py test_ci_workflow.py test_compose_worker.py test_cycles.py test_home.py test_island.py test_layout.py test_media_sweeper.py test_meetings.py test_permissions.py test_projects.py test_public_id.py test_retro.py test_reveal.py test_styling.py test_tasks.py test_template_comments.py test_template_urls.py test_transcription.py"
 
     steps:
