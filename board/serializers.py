@@ -27,10 +27,13 @@ in no payload here at any stage. `Card.Meta.ordering` is still
 by default: every list a member sees after the reveal comes from
 `revealed_cards()`, which sorts by `position` and by nothing else.
 
-The one deliberate exception is `Card.id`, which is a monotonic submission order
-too and is serialized anyway, because a board with no stable handle for a card
-cannot be mutated (#12), voted on, or keyed by React (#14). What that costs, and
-why it is not the same leak as `created_at`, is written out on issue #11.
+There is no exception for the card's primary key either. `Card.pk` comes from a
+table-wide sequence, so sorting one cycle's ids recovers the same submission
+order, and `_docs/decisions.md` item 9 keeps it inside the server: it appears in
+no response body and in no JSON embedded in a page. A card is addressed publicly
+by `Card.public_id`, a random UUID4 written when the card is created, and that
+is what `cards[].id` carries — a handle a board can be mutated by (#12), voted
+on, and keyed by in React (#14), which sorts into no order at all.
 
 
 The payload
@@ -54,7 +57,8 @@ Otherwise — `v` is absent, stale, or unparseable — the full state::
       "changed": true,             # this body carries board data
       "cards": [
         {
-          "id": 41,                # Card.pk, the handle #12 mutates by
+          "id": "6f1c…",           # Card.public_id as a string, the handle
+                                   # #12 mutates by. Never Card.pk.
           "category": "START",     # Card.Category value
           "text": "…",             # Card.text
           "cluster": null          # Cluster id, or null for ungrouped
@@ -179,9 +183,14 @@ def card_payload(card: Card) -> dict:
     No `is_anonymous` either. With no author on any card there is nothing for it
     to qualify, and a per-card "this one was written anonymously" flag is a
     fact about a member that the board does not need in order to render.
+
+    `id` is `public_id` and never `pk` — `_docs/decisions.md` item 9. It is sent
+    as a string rather than as whatever `json` would make of a `UUID`, so the
+    client receives one type for the handle at every stage and from every
+    endpoint.
     """
     return {
-        "id": card.pk,
+        "id": str(card.public_id),
         "category": card.category,
         "text": card.text,
         # Every card is ungrouped until #12 adds `Card.cluster`. It fills this

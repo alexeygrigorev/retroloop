@@ -15,6 +15,7 @@ only holds for the requests that go through that form:
 are timezone-aware datetimes. The two kinds are never compared with each other.
 """
 
+import uuid
 from datetime import date, timedelta
 from typing import ClassVar
 
@@ -162,6 +163,10 @@ class Card(models.Model):
       order for the one screen that shows a member their own cards. A list of
       *revealed* cards never uses that default: it goes through
       `revealed_cards()` below, which sorts by `position` and by nothing else.
+
+    `public_id` is the fourth, and it is the one a browser is allowed to see.
+    `pk` stays the primary key and the target of every foreign key; it simply
+    stops leaving the server — `_docs/decisions.md` item 9.
     """
 
     class Category(models.TextChoices):
@@ -195,6 +200,22 @@ class Card(models.Model):
     # mistaken for a real place in the order — see `cycles/reveal.py`.
     position = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
+    # The handle a card is addressed by outside this process, and the only one:
+    # `pk` appears in no response body and in no request the server accepts —
+    # `_docs/decisions.md` item 9. `pk` comes from a table-wide sequence, so
+    # sorting one cycle's ids recovers submission order, which is exactly what
+    # `cycles/reveal.py` shuffles to destroy.
+    #
+    # `uuid4` and nothing else. A counter allocated in submission order is the
+    # same leak in a different type, and so is a time-ordered UUID (v1, v6,
+    # v7), because both sort back into the order the cards were written in.
+    #
+    # A default rather than something a view assigns: the value is written when
+    # the row is created, so a card has a handle during the week it is being
+    # written, and its identity does not change underneath the board at reveal.
+    # `editable=False` keeps it out of every ModelForm, so no request can
+    # choose one.
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
 
     objects = CardQuerySet.as_manager()
 

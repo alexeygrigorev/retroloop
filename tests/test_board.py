@@ -381,13 +381,13 @@ def test_a_member_gets_the_documented_payload_before_reveal(
         "changed": True,
         "cards": [
             {
-                "id": board["ada_open"].pk,
+                "id": str(board["ada_open"].public_id),
                 "category": "START",
                 "text": ADA_OPEN_TEXT,
                 "cluster": None,
             },
             {
-                "id": board["ada_secret"].pk,
+                "id": str(board["ada_secret"].public_id),
                 "category": "CONTINUE",
                 "text": ADA_SECRET_TEXT,
                 "cluster": None,
@@ -423,7 +423,12 @@ def test_a_member_gets_the_documented_payload_from_reveal(
         "version": 1,
         "changed": True,
         "cards": [
-            {"id": card.pk, "category": card.category, "text": card.text, "cluster": None}
+            {
+                "id": str(card.public_id),
+                "category": card.category,
+                "text": card.text,
+                "cluster": None,
+            }
             for card in ordered
         ],
         "clusters": [],
@@ -570,8 +575,8 @@ def test_before_reveal_the_body_holds_the_viewers_own_cards_and_nobody_elses(
     payload = response.json()
 
     assert [card["id"] for card in payload["cards"]] == [
-        board["ada_open"].pk,
-        board["ada_secret"].pk,
+        str(board["ada_open"].public_id),
+        str(board["ada_secret"].public_id),
     ]
     assert ADA_OPEN_TEXT in body
     for text in OTHER_MEMBERS_TEXT:
@@ -604,12 +609,15 @@ def test_from_reveal_every_card_is_present_in_position_order(
             board["bruno_open"],
         ]
     )
-    submission_order = [card.pk for card in Card.objects.filter(cycle=retro.cycle)]
+    # `Card.Meta.ordering` is `["created_at", "id"]`, so a plain queryset is
+    # submission order — the order the payload must not be in, whatever the
+    # handles are called.
+    submission_order = [str(card.public_id) for card in Card.objects.filter(cycle=retro.cycle)]
     log_in(client, ada)
 
     payload = get_state(client, retro).json()
 
-    assert [card["id"] for card in payload["cards"]] == [card.pk for card in ordered]
+    assert [card["id"] for card in payload["cards"]] == [str(card.public_id) for card in ordered]
     assert [card["id"] for card in payload["cards"]] != submission_order
 
 
@@ -719,7 +727,7 @@ def test_the_card_selection_agrees_with_can_view_card_at_every_stage(
     served = {card["id"] for card in payload["cards"]}
 
     for card in Card.objects.filter(cycle=retro.cycle):
-        assert (card.pk in served) is can_view_card(ada, card), (card.pk, stage)
+        assert (str(card.public_id) in served) is can_view_card(ada, card), (card.pk, stage)
 
 
 @pytest.mark.django_db

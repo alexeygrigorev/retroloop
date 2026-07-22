@@ -349,6 +349,12 @@ def test_the_card_table_carries_no_second_place_to_keep_a_former_author(
     The absence of those columns is the feature — `_docs/decisions.md` item 3 —
     so the column list is asserted whole rather than by searching it for names
     somebody might not have used.
+
+    `public_id` is on the list because #73 added it, and it says nothing about
+    anyone: a random UUID4 written when the card is created, which is the handle
+    the card is addressed by outside the server — `_docs/decisions.md` item 9.
+    A column added here later still has to be argued for in this docstring
+    before this assertion will pass, which is the point of listing them whole.
     """
     reveal(retro, owner)
 
@@ -367,6 +373,7 @@ def test_the_card_table_carries_no_second_place_to_keep_a_former_author(
         "is_anonymous",
         "position",
         "created_at",
+        "public_id",
     }
 
 
