@@ -162,7 +162,11 @@ jobs:
           fi
           echo "$css is $size bytes."
 
+      # TEMPORARY, reverted by the next commit: proof for issue #63 that the
+      # check below fails, naming the build command, when nothing built the
+      # bundle. The step it disables is restored immediately after the run.
       - name: Build the React island
+        if: false
         # The second built artefact, and the same rule as the stylesheet above:
         # a workflow that builds only one of the two assets is green while the
         # other build is broken, which is the hole this job exists to close.
