@@ -23,7 +23,7 @@ dev = [
 DJANGO_SETTINGS_MODULE = "config.settings_test"
 pythonpath = ["."]
 testpaths = ["tests"]
-addopts = "--strict-markers --ignore=tests/test_audio.py"
+addopts = "--strict-markers"
 
 [tool.ruff]
 target-version = "py314"

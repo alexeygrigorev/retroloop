@@ -27,6 +27,7 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
 from django.conf import settings
 
 BASE_DIR = Path(settings.BASE_DIR)
@@ -537,6 +538,7 @@ def test_the_skip_gate_still_fails_a_skipped_test(tmp_path: Path) -> None:
     assert "ffmpeg missing" in output, output
 
 
+@pytest.mark.skip(reason="PROOF, REVERTED NEXT COMMIT: does the zero-skip gate still fire?")
 def test_the_skip_gate_passes_a_clean_report(tmp_path: Path) -> None:
     result = run_gate(SKIP_GATE, tmp_path, junit_report(floor()))
 
