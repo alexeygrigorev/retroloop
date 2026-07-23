@@ -120,3 +120,30 @@ def process_meeting_record(record_id: int) -> None:
     from meetings.pipeline import process_meeting
 
     process_meeting(record_id)
+
+
+@task()
+def cluster_retrospective(retro_id: int) -> None:
+    """Group a revealed retrospective's cards into suggested clusters. Enqueued by #9.
+
+    The work is `retro.clustering.cluster_retrospective_cards`: it sends the
+    cards' text to the model, writes the groups as auto-generated `Cluster` rows
+    and moves the cards into them, and bumps the board version so open boards
+    pick the suggestions up (#22).
+
+    It takes an id and re-fetches, per the conventions above. Time passes
+    between the enqueue and the run, so the retrospective may be gone, or may
+    already carry suggestions, and either is a return rather than an error.
+
+    Enqueued by the `-> REVEAL` transition on commit (`retro/services.py`), so
+    it runs on the committed, frozen, anonymised cards — never inside the
+    transition, where it would read cards a rollback might throw away. Nothing
+    retries it: a clustering failure leaves the cards ungrouped and the team
+    clusters by hand, which needs no second attempt.
+    """
+    # Imported here rather than at module scope, for the same reason
+    # `process_meeting_record` imports its pipeline lazily: this module is
+    # imported for `enqueue_on_commit` while the app registry is still loading.
+    from retro.clustering import cluster_retrospective_cards
+
+    cluster_retrospective_cards(retro_id)
