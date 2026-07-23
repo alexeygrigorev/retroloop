@@ -20,4 +20,10 @@ urlpatterns = [
     path("retros/<int:pk>/clusters/merge", views.cluster_merge_view, name="board-cluster-merge"),
     path("retros/<int:pk>/clusters/split", views.cluster_split_view, name="board-cluster-split"),
     path("retros/<int:pk>/clusters/delete", views.cluster_delete_view, name="board-cluster-delete"),
+    # Voting (#15), same prefix and style. Cast and withdraw are POSTs that
+    # answer with the board; progress is a facilitator-only GET returning a bare
+    # count of how many members have spent every vote.
+    path("retros/<int:pk>/votes/cast", views.vote_cast_view, name="board-vote-cast"),
+    path("retros/<int:pk>/votes/withdraw", views.vote_withdraw_view, name="board-vote-withdraw"),
+    path("retros/<int:pk>/votes/progress", views.vote_progress_view, name="board-vote-progress"),
 ]

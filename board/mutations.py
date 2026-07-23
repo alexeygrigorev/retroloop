@@ -69,6 +69,7 @@ from django.http import Http404
 from board.serializers import board_state
 from cycles.models import Card
 from projects.permissions import (
+    can_cast_vote,
     can_create_cluster,
     can_delete_cluster,
     can_merge_cluster,
@@ -77,7 +78,7 @@ from projects.permissions import (
     can_split_cluster,
     can_view_project,
 )
-from retro.models import CLUSTER_NAME_MAX_LENGTH, Cluster, Retrospective
+from retro.models import CLUSTER_NAME_MAX_LENGTH, Cluster, Retrospective, Vote
 from retro.services import bump_version
 
 #: The largest value a `BigAutoField` can hold. A cluster id outside 1..this is
@@ -300,6 +301,134 @@ def delete_cluster(user, retro: Retrospective, data) -> bool:
 
 
 # --------------------------------------------------------------------------
+# Votes
+#
+# Two operations, both `change` functions like the seven above and run the same
+# way: `apply_mutation()` takes the retrospective's row lock first, refuses a
+# non-member with the same 404 an unused id gets, then calls one of these inside
+# the transaction and bumps the version once if it returns True.
+#
+# The budget is the reason the lock matters here as much as it does for a card
+# move. A member has `votes_per_member` votes across the whole board; a cast that
+# would carry their spend past it is refused. Two casts from one member racing
+# each other would both read the same "already spent" and both think there was
+# room — so they are serialised on the retrospective's row, the same lock every
+# other mutation on this board takes, and the second reads the first's write
+# rather than the stale total. Nothing here locks a member's rows on their own:
+# the retrospective's lock already serialises every write on the board, and the
+# lock order retrospective < cycle < card is kept by taking only the first of
+# the three, exactly as the card and cluster operations do.
+# --------------------------------------------------------------------------
+
+
+def cast_vote(user, retro: Retrospective, data) -> bool:
+    """Add `weight` of the member's votes to `cluster`. Refused past the budget.
+
+    `weight` is optional and defaults to one, so a single click spends a single
+    vote and a member who cares a lot posts a larger number or clicks again;
+    either way the votes stack onto the one row this member has for this cluster.
+
+    Refused, writing nothing, when the stage is not VOTE — `can_cast_vote` is
+    True only then, so a cast before voting opens and a cast after it closes are
+    the same 409 — and when the member's total spend across every cluster would
+    pass their budget. The budget total is read here, under the row lock
+    `apply_mutation()` already holds, so two casts cannot both slip past it.
+    """
+    cluster = _cluster_or_404(retro, data.get("cluster"))
+    weight = _vote_weight(retro, data.get("weight"))
+    _require_voting_open(can_cast_vote(user, retro))
+
+    spent = _spent(user, retro)
+    if spent + weight > retro.votes_per_member:
+        remaining = retro.votes_per_member - spent
+        raise InvalidRequest(
+            f"That would spend {spent + weight} of your {retro.votes_per_member} votes. "
+            f"You have {remaining} {_votes(remaining)} left."
+        )
+
+    existing = Vote.objects.filter(retrospective=retro, cluster=cluster, user=user).first()
+    if existing is None:
+        Vote.objects.create(retrospective=retro, cluster=cluster, user=user, weight=weight)
+    else:
+        # Read-then-write is safe under the retrospective's row lock: no other
+        # write on this board runs between the read above and the save here.
+        existing.weight += weight
+        existing.save(update_fields=["weight"])
+    return True
+
+
+def withdraw_vote(user, retro: Retrospective, data) -> bool:
+    """Take `weight` of the member's votes back off `cluster`, returning them to budget.
+
+    The mirror of `cast_vote`: `weight` defaults to one, the stage must be VOTE,
+    and the votes come back to the member's remaining budget for them to place
+    elsewhere — `_docs/decisions.md` item 2, votes are freely reassignable while
+    the stage is VOTE. Withdrawing the last vote on a cluster deletes the row
+    rather than leaving a zero behind, so `votes.mine` never carries a cluster
+    the member has no votes on.
+
+    Withdrawing from a cluster the member has not voted on, or withdrawing more
+    than they placed there, is refused with a sentence — a client that thinks it
+    removed two votes and removed one has no way to find out otherwise.
+    """
+    cluster = _cluster_or_404(retro, data.get("cluster"))
+    weight = _vote_weight(retro, data.get("weight"))
+    _require_voting_open(can_cast_vote(user, retro))
+
+    existing = Vote.objects.filter(retrospective=retro, cluster=cluster, user=user).first()
+    if existing is None:
+        raise InvalidRequest("You have no votes on that cluster to withdraw.")
+    if weight > existing.weight:
+        raise InvalidRequest(
+            f"You have only {existing.weight} {_votes(existing.weight)} on that cluster, "
+            f"so {weight} cannot be withdrawn."
+        )
+
+    remaining = existing.weight - weight
+    if remaining == 0:
+        # A row that would fall to zero is deleted, not stored — the model's
+        # check constraint refuses a zero weight, and the payload must not carry
+        # a cluster the member no longer has any votes on.
+        existing.delete()
+    else:
+        existing.weight = remaining
+        existing.save(update_fields=["weight"])
+    return True
+
+
+def _spent(user, retro: Retrospective) -> int:
+    """How many votes this member has already placed across the whole board.
+
+    The budget is a fact about a member within a retrospective, spanning every
+    cluster, so this sums their rows for the retrospective and reads no cluster.
+    Called inside `apply_mutation()`'s transaction, under the row lock, so the
+    number it returns cannot go stale before the cast that depends on it writes.
+    """
+    total = Vote.objects.filter(retrospective=retro, user=user).aggregate(
+        spent=models.Sum("weight")
+    )
+    return total["spent"] or 0
+
+
+def members_who_spent_everything(retro: Retrospective) -> int:
+    """How many members have placed every one of their votes. A count, never who.
+
+    What the facilitator watches to know when to close voting — the one thing the
+    board's secrecy lets them see about the room, and only as a number.
+    `_docs/decisions.md` item 10 and #15's secrecy criteria: never which members,
+    never a partial tally per person. This groups the votes by member, sums each
+    member's spend, and counts the members whose spend equals the budget. It
+    names no member and returns nothing but an integer.
+    """
+    spends = (
+        Vote.objects.filter(retrospective=retro)
+        .values("user_id")
+        .annotate(spent=models.Sum("weight"))
+    )
+    return sum(1 for row in spends if row["spent"] >= retro.votes_per_member)
+
+
+# --------------------------------------------------------------------------
 # Resolving what a request names
 # --------------------------------------------------------------------------
 
@@ -378,6 +507,52 @@ def _require(permitted: bool) -> None:
             "The board is no longer being clustered, so it cannot be changed. "
             "Reload the page to see where the retrospective has got to."
         )
+
+
+def _require_voting_open(permitted: bool) -> None:
+    """Turn `can_cast_vote` being False into the 409 a stale board gets.
+
+    A cast or withdraw is refused the same way a card move on a frozen board is:
+    a conflict, not a 403 — nothing is wrong with the caller, their view of the
+    stage is out of date, and reloading is the fix. `can_cast_vote` is True only
+    during VOTE, so a request before voting opens and one after it closes are the
+    same answer. Reached only after `apply_mutation()` has established the caller
+    as a project member, so the only thing left for it to be False about is the
+    stage.
+    """
+    if not permitted:
+        raise BoardFrozen(
+            "Voting is not open on this retrospective, so votes cannot be changed. "
+            "Reload the page to see where the retrospective has got to."
+        )
+
+
+def _vote_weight(retro: Retrospective, raw) -> int:
+    """How many votes a cast or withdraw names, defaulting to one.
+
+    Absent means one — a single click spends a single vote. Anything present has
+    to be a whole number of votes from 1 to the budget: a member may move all of
+    their votes in one request but never more than exist, and zero, a fraction, a
+    negative and a word are each a request that cannot be carried out as written.
+    The across-the-board budget is enforced by the caller against the running
+    total; this only rejects a single value that is not a count of votes at all.
+    """
+    if raw is None:
+        return 1
+    try:
+        weight = int(raw)
+    except TypeError, ValueError:
+        raise InvalidRequest("A vote is a whole number of votes.") from None
+    if not 1 <= weight <= retro.votes_per_member:
+        raise InvalidRequest(
+            f"A vote is between 1 and {retro.votes_per_member} {_votes(retro.votes_per_member)}."
+        )
+    return weight
+
+
+def _votes(count: int) -> str:
+    """ "vote" or "votes", so the budget messages read as sentences."""
+    return "vote" if count == 1 else "votes"
 
 
 def _clean_name(raw) -> str:

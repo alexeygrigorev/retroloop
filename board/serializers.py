@@ -75,8 +75,16 @@ Otherwise — `v` is absent, stale, or unparseable — the full state::
           "status": "PENDING"      # Cluster.Status, moved by #16
         }
       ],
-      "votes": {"mine": [], "remaining": 3},
-      "vote_totals": {}            # PRESENT ONLY from DISCUSS on
+      "votes": {                   # this viewer's own votes, never anyone else's
+        "mine": [
+          {"cluster": 4,           # a cluster id the viewer has votes on
+           "weight": 2}            # how many of their votes sit there
+        ],
+        "remaining": 1             # budget minus everything they have spent
+      },
+      "vote_totals": {"4": 5}      # votes per cluster id; PRESENT ONLY from
+                                   # DISCUSS on, absent (not empty, not zeroed)
+                                   # at every earlier stage
     }
 
 `cards` holds the viewer's own cards and nobody else's before `REVEAL`, and
@@ -96,10 +104,26 @@ author. It is never an author, never a name, and it is `false` for both a card
 somebody else wrote and a card the viewer wrote anonymously, so it hands a client
 no way to tell those two cases apart. See `card_payload()`.
 
+`votes` is scoped to the viewer by construction — `vote_payload()` filters on
+the viewer's own rows and computes their remaining budget from them, so there is
+no branch that could widen it to another member and no aggregate over the room
+for one to hide in. `votes.mine` carries a `cluster` id and a `weight` per
+cluster the viewer has voted on, and `votes.remaining` is what is left of their
+`votes_per_member` budget. A member who has not voted gets `{"mine": [],
+"remaining": votes_per_member}`.
+
 `vote_totals` is the whole of what a viewer who may not see the totals must not
 receive, so it is one key that is simply absent rather than a set of zeroes or
 nulls spread through the clusters. `can_see_vote_totals` decides, and it is
-False for everyone while the stage is `VOTE`.
+False for everyone while the stage is `VOTE`: the totals appear only from
+`DISCUSS` on, once the allocation is final, so no member can watch a running
+count move and difference two polls into another member's ballot. A member's own
+votes are never in `vote_totals` as anything separable from the aggregate, and no
+member's identity is ever attached to a count. How many members have spent their
+whole budget — the one thing the facilitator watches to know when to close voting
+— is not here at all: it is a facilitator-only count on its own endpoint
+(`board.views.vote_progress_view`), never a per-member fact and never mixed into
+the board every member polls.
 
 A cluster is addressed by its integer primary key, in the payload and in #12's
 requests alike, and it deliberately has no opaque handle. `_docs/decisions.md`
@@ -113,20 +137,20 @@ grouping is stated. A cluster does not carry a list of its cards: two statements
 of one relation drift, and the client that draws the board has every card in
 front of it already.
 
-What is a fixed empty value today and why:
-
-- `votes.mine` and `vote_totals`: `Vote` arrives with #15. `votes.remaining` is
-  `Retrospective.votes_per_member` until there is anything to spend.
-
-#15 fills those in by filling in the functions below. It adds no second
-serializer, so the shape #13 and #14 are written against cannot drift — and
-neither did #12, whose seven mutation endpoints answer with `board_state()`
-itself rather than with a body of their own.
+#15 filled `votes` and `vote_totals` in by filling in the functions below, and
+added the two vote-casting endpoints and the facilitator's progress endpoint in
+`board/`. It added no second serializer, so the shape #13 and #14 are written
+against cannot drift — and neither did #12, whose seven mutation endpoints answer
+with `board_state()` itself rather than with a body of their own. The cast and
+withdraw endpoints answer with `board_state()` too, so a voter's own updated
+`votes` comes straight back in the response to their POST.
 """
+
+from django.db.models import Sum
 
 from cycles.models import Card, revealed_cards
 from projects.permissions import can_see_vote_totals
-from retro.models import Retrospective
+from retro.models import Retrospective, Vote
 
 # --------------------------------------------------------------------------
 # The two bodies
@@ -289,14 +313,36 @@ def vote_payload(user, retro: Retrospective) -> dict:
 
     `_docs/decisions.md` item 2: votes are reassignable while the stage is
     `VOTE`, which is only safe while nobody can see the running totals. So this
-    is scoped to `user` by construction — there is no branch here that could
-    widen it to another member, and no aggregate for one to hide in.
+    is scoped to `user` by construction — the query filters on `user=user`, there
+    is no branch here that could widen it to another member, and no aggregate for
+    one to hide in.
 
-    #15 fills `mine` with the viewer's rows and computes `remaining` from them.
+    `mine` is one entry per cluster this viewer has votes on — `cluster` (the
+    integer id the payload and #12's requests both address a cluster by) and
+    `weight` (how many they stacked there) — ordered by cluster id so the same
+    votes come back in the same order from one poll to the next. A cluster the
+    viewer has not voted on is simply absent, the same way a member with no votes
+    gets an empty list rather than a row of zeroes.
+
+    `remaining` is the budget minus everything they have spent across every
+    cluster. It is what an about-to-vote client checks and what the cast endpoint
+    enforces under a lock; computed here from the same rows so the number the
+    board shows and the number the server defends are read the same way.
+
+    One query, whatever the board holds: the viewer's rows for this
+    retrospective, summed in Python over the handful a single member can have
+    (at most `votes_per_member` votes spread across at most that many clusters).
     """
+    mine = [
+        {"cluster": cluster_id, "weight": weight}
+        for cluster_id, weight in Vote.objects.filter(retrospective=retro, user=user)
+        .order_by("cluster_id")
+        .values_list("cluster_id", "weight")
+    ]
+    spent = sum(vote["weight"] for vote in mine)
     return {
-        "mine": [],
-        "remaining": retro.votes_per_member,
+        "mine": mine,
+        "remaining": retro.votes_per_member - spent,
     }
 
 
@@ -305,7 +351,20 @@ def vote_totals(retro: Retrospective) -> dict:
 
     Called from `board_state()` behind `can_see_vote_totals`, which is False for
     everyone while the stage is `VOTE` and True for project members from
-    `DISCUSS` on. #15 computes the numbers; the gate is already here so that
-    filling it in cannot accidentally publish them a stage early.
+    `DISCUSS` on. That gate is the whole of the secrecy guarantee: totals become
+    visible only once voting is over and the allocation is final, so there is no
+    moment at which a member could poll twice, watch a total move, and difference
+    two snapshots into another member's vote — by the time this function is ever
+    reached, nothing about the tally can change again.
+
+    A cluster with no votes is absent rather than present as a zero: an empty
+    board is `{}`, which is what `tests/test_board.py` pins, and a cluster nobody
+    voted for says nothing at all rather than "nobody voted here". The sum is one
+    grouped query over the retrospective's votes, so the cost does not grow with
+    the number of clusters or of voters. Keys are cluster ids; JSON renders them
+    as strings, which is how a cluster id already travels as an object key.
     """
-    return {}
+    totals = (
+        Vote.objects.filter(retrospective=retro).values("cluster_id").annotate(total=Sum("weight"))
+    )
+    return {row["cluster_id"]: row["total"] for row in totals}

@@ -22,9 +22,9 @@ from django.http import Http404, HttpRequest, JsonResponse
 from django.views.decorators.http import require_GET, require_POST
 
 from board import mutations
-from board.mutations import BoardRejection, apply_mutation
+from board.mutations import BoardRejection, apply_mutation, members_who_spent_everything
 from board.serializers import board_state, unchanged_state
-from projects.permissions import can_view_project
+from projects.permissions import can_advance_stage, can_view_project
 from retro.models import Retrospective
 
 
@@ -140,6 +140,61 @@ def cluster_split_view(request: HttpRequest, pk: int) -> JsonResponse:
 def cluster_delete_view(request: HttpRequest, pk: int) -> JsonResponse:
     """`POST /retros/<pk>/clusters/delete` — `cluster` goes, its cards are ungrouped."""
     return _write(request, pk, mutations.delete_cluster)
+
+
+# --------------------------------------------------------------------------
+# Votes
+#
+# Casting and withdrawing are two more writes, in the same style: a POST with a
+# CSRF token, answered with the same full board state the read endpoint and the
+# seven cluster writes produce, so a voter's own updated votes and remaining
+# budget come straight back in the response. They are separate URLs, so a client
+# cannot reach one meaning the other, and neither is a GET.
+# --------------------------------------------------------------------------
+
+
+@require_POST
+def vote_cast_view(request: HttpRequest, pk: int) -> JsonResponse:
+    """`POST /retros/<pk>/votes/cast` — add `weight` votes to `cluster`.
+
+    `cluster` is a cluster's integer id; `weight` is optional and defaults to
+    one. Refused past the member's budget, and refused outside the VOTE stage.
+    """
+    return _write(request, pk, mutations.cast_vote)
+
+
+@require_POST
+def vote_withdraw_view(request: HttpRequest, pk: int) -> JsonResponse:
+    """`POST /retros/<pk>/votes/withdraw` — take `weight` votes back off `cluster`.
+
+    The votes return to the member's remaining budget. Refused outside VOTE, and
+    refused when the member has fewer votes on the cluster than they ask to take.
+    """
+    return _write(request, pk, mutations.withdraw_vote)
+
+
+@require_GET
+def vote_progress_view(request: HttpRequest, pk: int) -> JsonResponse:
+    """`GET /retros/<pk>/votes/progress` — how many members have spent every vote.
+
+    A facilitator-only count, and nothing else: it tells them when to close
+    voting without telling them who voted for what. `_docs/decisions.md` item 10
+    and #15's secrecy criteria — never which members, never partial progress per
+    person, only how many have placed their whole budget.
+
+    Gated by `can_advance_stage`, which is exactly "this cycle's facilitator":
+    #15 defines no access rule of its own, so it reuses the predicate that
+    already means facilitator rather than adding one, and the facilitator is the
+    person this count exists for — it is what they watch to know when to advance.
+    Everyone else — a member who is not the facilitator, a non-member, an
+    anonymous browser — gets the same 404 an unused id gets, so the endpoint
+    confirms nothing to anyone it is not for.
+    """
+    retro = Retrospective.objects.select_related("cycle__project").filter(pk=pk).first()
+    if retro is None or not can_advance_stage(request.user, retro):
+        raise Http404
+
+    return JsonResponse({"finished": members_who_spent_everything(retro)})
 
 
 def _write(request: HttpRequest, pk: int, change) -> JsonResponse:

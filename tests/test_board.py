@@ -1091,11 +1091,16 @@ def test_a_deactivated_member_gets_404(
 # --------------------------------------------------------------------------
 
 #: Session, user, the retrospective with its cycle and project, the membership
-#: `can_view_project` reads, the cards, and the clusters. Six, whatever the
-#: board holds. The sixth arrived with #12: `cluster_payloads()` is one query
-#: for the whole board, and a card's cluster is read off `cluster_id`, which is
-#: already on the row.
-FULL_STATE_QUERIES = 6
+#: `can_view_project` reads, the cards, the clusters, and the viewer's own votes.
+#: Seven, whatever the board holds. The sixth arrived with #12:
+#: `cluster_payloads()` is one query for the whole board, and a card's cluster is
+#: read off `cluster_id`, which is already on the row. The seventh arrived with
+#: #15: `vote_payload()` reads the viewer's own votes for this retrospective in a
+#: single query and sums them in Python, so the count does not grow with the
+#: board or with how many votes the member cast. From DISCUSS on the totals add
+#: one more grouped query, but these fixtures measure before then, where the
+#: totals key is absent.
+FULL_STATE_QUERIES = 7
 
 
 @pytest.mark.django_db
