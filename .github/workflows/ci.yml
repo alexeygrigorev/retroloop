@@ -113,7 +113,7 @@ jobs:
         test_auth.py 41
         test_board.py 71
         test_cards.py 71
-        test_ci_workflow.py 59
+        test_ci_workflow.py 60
         test_compose_worker.py 8
         test_cycles.py 37
         test_home.py 1
@@ -457,6 +457,19 @@ jobs:
           on_disk = {path.name for path in tests_dir.glob("test_*.py")}
 
           errors = []
+
+          # No file may be pinned at zero. A count of zero and a collection of
+          # zero match, so without this a whole file could be suppressed - by an
+          # --ignore or a collect_ignore - and its line edited to 0, and the gate
+          # would agree. A file that contributes nothing is not listed at all; it
+          # is removed from the map and the tree together.
+          zeros = sorted(name for name, count in committed.items() if count <= 0)
+          if zeros:
+              errors.append(
+                  f"::error::{', '.join(zeros)} is pinned at 0 in TEST_COUNTS. A file that "
+                  "contributes no tests is not listed - remove it from the map and the tree, "
+                  "do not pin it at zero."
+              )
 
           # The load-bearing check: every file's collected count is its committed
           # count. The comparison universe is every file mentioned anywhere - the

@@ -968,6 +968,24 @@ def test_the_perfile_gate_fails_when_a_file_count_moves_either_direction(tmp_pat
         assert f"{name} {got}" in output, output
 
 
+def test_the_perfile_gate_rejects_a_file_pinned_at_zero(tmp_path: Path) -> None:
+    """The `--ignore`-the-guard escape, closed.
+
+    A suppressed file collects nothing, and a committed 0 would match that
+    nothing. So no file may be pinned at 0: to remove the guard file you must
+    edit its line to 0, and that is refused - there is no green value for "this
+    file runs no tests".
+    """
+    committed = {**committed_counts(), "test_ci_workflow.py": 0}
+    actual = {k: v for k, v in committed.items() if k != "test_ci_workflow.py"}
+    result = run_perfile_gate(
+        tmp_path, actual=actual, committed=committed, on_disk=sorted(committed)
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "test_ci_workflow.py is pinned at 0 in TEST_COUNTS" in output, output
+
+
 def test_the_perfile_gate_fails_a_map_that_sums_wrong(tmp_path: Path) -> None:
     """One source of truth: a map that does not sum to the collection is red.
 
