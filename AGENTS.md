@@ -142,30 +142,36 @@ itself, so nothing the suite needs is assumed to be there.
 - A test removed from collection fails the build too. A file that is never
   collected writes no result at all, so the skip gate above cannot see it - an
   `--ignore=` in `addopts` once produced a fully green run with the whole media
-  pipeline gone. So the number of tests that ran is checked against
-  `EXPECTED_TESTS` in `.github/workflows/ci.yml`, and it is an exact count, not
-  a floor: a run with more tests than that is red as well as a run with fewer.
-  **Every branch that adds or removes a test changes that one line, in the same
-  commit.** The failure prints the line to paste, with the number already in it.
-  A floor was tried first (#67) and went stale twice in a day, because the run
-  that asks for it to be raised is green and the run that tempts you to lower it
-  is red.
-- The number cannot be set to whatever suits a build.
-  `tests/test_ci_workflow.py` collects the suite with pytest and asserts
-  `EXPECTED_TESTS` equals what collection produces, so a wrong number fails the
-  suite one step before the gate.
-- The *set* of test files is pinned too, in `TEST_FILES` in
-  `.github/workflows/ci.yml` - the sorted list of `tests/test_*.py` basenames.
-  **Every branch that adds, removes or renames a test file changes that one
-  line, in the same commit.** A count alone cannot see a file swapped for
-  parametrized cases elsewhere, or renamed off the `test_*.py` convention, or
-  `git rm`'d: the total stays put. So a final job step re-collects the suite
-  itself and fails if the files on disk are not exactly `TEST_FILES`, if any
-  listed file collected nothing (an `--ignore` or a `collect_ignore`), if a
-  `pytest_collection_modifyitems` hook deselected anything (it counts items
-  before and after the hook), or if the count is not `EXPECTED_TESTS`. It is a
-  job step and not a test on purpose: the suite's own guards live in a collected
-  file, and this one still fires when that file is the one dropped.
+  pipeline gone. So the suite's shape is pinned as `TEST_COUNTS` in
+  `.github/workflows/ci.yml`: one line per test file, `basename count`, the
+  number of tests that file contributes. **Every branch that adds, removes or
+  renames a test file, or changes how many tests one file runs, edits that
+  file's line in the same commit.**
+- It is pinned per file, not as a single total, because a total cannot see a
+  subset dropped from one file while the total is lowered to match - a
+  collection hook (`collect_ignore`, `pytest_collection_modifyitems`,
+  `pytest_pycollect_makeitem`, `pytest_generate_tests`) can shrink one file and
+  the number is edited down to agree. Pinned per file, dropping tests from
+  `test_auth.py` fails on `test_auth.py` whatever the total does and whatever
+  hook did it. A final job step re-collects the suite and checks each file's
+  collected count against `TEST_COUNTS`; the failure names the file and the
+  number to write. This subsumes the file set (the keys), "every file
+  contributes something" (a count of zero) and the total (the sum, which is what
+  the count gate above checks the run against - one source of truth, no separate
+  number to drift). It is a job step and not a test on purpose: the suite's own
+  guards live in a collected file, and this one still fires when that file is the
+  one dropped.
+- Do not hand-edit the counts. Regenerate the whole `TEST_COUNTS` block from the
+  current collection and paste it in, in the same commit that changed the suite:
+  ```
+  uv run python -c "import collections,pytest
+  class P:
+      def pytest_collection_finish(self, session):
+          c=collections.Counter(i.nodeid.split('::',1)[0].rsplit('/',1)[-1] for i in session.items)
+          [print(f'{n} {c[n]}') for n in sorted(c)]
+  raise SystemExit(pytest.main(['--collect-only','-p','no:cacheprovider'],plugins=[P()]))" 2>/dev/null
+  ```
+  Each line is `basename count`; indent the block under `TEST_COUNTS: |`.
 - A newer push to the same branch cancels the run it supersedes, so the run
   worth reading is always the one for the tip commit.
 - Reproduce a CI run locally with one command:
