@@ -16,7 +16,8 @@ from django.urls import reverse
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_POST
 
-from cycles.models import Card, FeedbackCycle
+from board.serializers import vote_totals
+from cycles.models import Card, FeedbackCycle, revealed_cards
 from meetings.services import upload_is_open
 from projects.permissions import (
     can_advance_stage,
@@ -27,10 +28,11 @@ from projects.permissions import (
     can_edit_decision,
     can_update_action_item,
     can_upload_recording,
+    can_view_summary,
 )
 from projects.views import member_or_404
 from retro.forms import ActionItemForm, DecisionForm, ReviewOwnerForm
-from retro.models import ActionItem, Decision, Retrospective
+from retro.models import ActionItem, Cluster, Decision, Retrospective
 from retro.services import (
     StageError,
     advance_stage,
@@ -802,4 +804,217 @@ def _render_review_action_item_edit(
         "retro/review_action_item_edit.html",
         {"retro": retro, "cycle": retro.cycle, "project": retro.cycle.project, "form": form},
         status=status,
+    )
+
+
+# --------------------------------------------------------------------------
+# The retrospective summary — #25
+#
+# One page that is the retrospective's record: the discussion topics and their
+# outcomes, the notes, the confirmed decisions and action items, the
+# participation, and the feedback cards grouped by cluster. It is a single record
+# that looks the same to every member who opens it — nothing on it varies with
+# who is reading it.
+#
+# `_docs/decisions.md` item 10 governs the card list absolutely: a card is its
+# category and its text and nothing else. No card carries an author (anonymous or
+# attributed), nothing distinguishes an anonymous card from an attributed one, no
+# count splits the cards by anonymity, and no card handle (`pk` or `public_id`)
+# reaches the page. Cards come from `revealed_cards()` — `position` order, never
+# `Card.Meta.ordering`'s submission order — and the card list lives in one
+# `#feedback-cards` container the absence sweeps assert over. The page carries
+# display names elsewhere — note authors, action owners, the participation list —
+# so a name never appears *beside a card*, which is what the container makes
+# assertable.
+#
+# The summary marks none of the viewer's own cards, unlike the board (#75): the
+# cards are frozen and quoted rather than moved, so the mark would buy nothing and
+# would cost the one property this page needs — that it is one record, identical
+# for everyone. No `mine` here.
+#
+# No `login_required`: a member, a non-member and an anonymous visitor are told
+# apart by `can_view_summary` alone, which is False for the last two, so all three
+# non-members get the same 404 an unused id would — the answer the rest of the
+# project uses, rather than a login redirect that confirms the page exists.
+# --------------------------------------------------------------------------
+
+
+def _agenda_clusters(retro: Retrospective) -> tuple[list[Cluster], dict[int, int]]:
+    """This retrospective's clusters in agenda order, and the vote weight of each.
+
+    Agenda order is #16's, and the same rule `board/serializers.py` renders the
+    board with from DISCUSS on: highest vote weight first, ties broken by
+    `position` then `id`, so it is a total order that does not reshuffle and a
+    topic with no votes falls to the bottom rather than being hidden. The weights
+    come from `vote_totals()`, the one definition the board already uses, so the
+    summary's agenda cannot drift from the board's. The summary exists only from
+    DISCUSS on, where the allocation is frozen, so reading the totals here reveals
+    no member's individual vote — it is the aggregate weight per topic and nothing
+    about who voted for what.
+    """
+    totals = vote_totals(retro)
+    clusters = sorted(
+        retro.clusters.all(),
+        key=lambda cluster: (-totals.get(cluster.pk, 0), cluster.position, cluster.pk),
+    )
+    return clusters, totals
+
+
+def _card_groups(retro: Retrospective, ordered_clusters: list[Cluster]) -> tuple[list[dict], list]:
+    """The revealed cards grouped by cluster in agenda order, plus the ungrouped.
+
+    Cards come from `revealed_cards()` and nothing else — `position` order, which
+    is the shuffled order the reveal handed out, never `Card.Meta.ordering`'s
+    `created_at`/`id` submission order that #10's shuffle exists to destroy. The
+    groups follow the same agenda order as the topics above, so a reader meets each
+    topic once; a card carries no author, no anonymity flag and no handle, and this
+    function reads none — it buckets by `cluster_id`, the column already on the
+    row. The ungrouped cards are returned separately so the template can render
+    them last, in a group of their own.
+    """
+    buckets: dict[int, list] = {cluster.pk: [] for cluster in ordered_clusters}
+    ungrouped: list = []
+    for card in revealed_cards(retro.cycle):
+        if card.cluster_id is None:
+            ungrouped.append(card)
+        else:
+            buckets.setdefault(card.cluster_id, []).append(card)
+    groups = [
+        {"name": cluster.name, "cards": buckets[cluster.pk]}
+        for cluster in ordered_clusters
+        if buckets[cluster.pk]
+    ]
+    return groups, ungrouped
+
+
+def _note_groups(retro: Retrospective, ordered_clusters: list[Cluster]) -> tuple[list[dict], list]:
+    """The notes grouped under their topic in agenda order, plus the retro-wide ones.
+
+    A note is always attributed — `_docs/decisions.md` item 10 says so in its
+    scope: a note has no anonymous alternative, so naming its author eliminates
+    nobody. The notes render in their own region, never inside the card list, so a
+    name never appears beside a card. A note against no cluster is about the
+    retrospective as a whole and is returned separately.
+    """
+    notes = list(retro.notes.select_related("author"))
+    groups = [
+        {
+            "name": cluster.name,
+            "notes": [note for note in notes if note.cluster_id == cluster.pk],
+        }
+        for cluster in ordered_clusters
+    ]
+    groups = [group for group in groups if group["notes"]]
+    retro_wide = [note for note in notes if note.cluster_id is None]
+    return groups, retro_wide
+
+
+def _participation(retro: Retrospective) -> tuple[list, list]:
+    """The project's members split into submitted and did-not-submit, by name.
+
+    Read from `CycleParticipation`, the only surviving record of who took part:
+    it holds a row for everyone who was a member when the cycle was revealed,
+    including anyone who has since left while their cards are still on the page.
+    Only the yes/no is read — no `card_count` beside a name (`_docs/decisions.md`
+    item 3a) and no `submitted_at`, day-truncated or otherwise — and the two lists
+    are sorted by display name so the record reads the same for everyone.
+    """
+    rows = list(retro.cycle.participation.select_related("user"))
+    rows.sort(key=lambda row: (row.user.display_name or row.user.username).lower())
+    submitted = [row.user for row in rows if row.submitted]
+    did_not_submit = [row.user for row in rows if not row.submitted]
+    return submitted, did_not_submit
+
+
+def retro_summary(request: HttpRequest, pk: int) -> HttpResponse:
+    """The retrospective's record, readable by every project member.
+
+    Available from DISCUSS on — before then there is no agenda to summarise, so a
+    request for it is answered the way an unused id is. A non-member and an
+    anonymous visitor get the same 404, from `can_view_summary` alone.
+
+    No `login_required`: a member, a non-member and an anonymous visitor are all
+    answered the same 404 by `can_view_summary`, which is False for the last two,
+    rather than a login redirect that would confirm the page exists — the answer
+    `_review_retro_or_404` gives for the same reason.
+    """
+    retro = get_object_or_404(
+        Retrospective.objects.select_related("cycle__project", "cycle__facilitator"), pk=pk
+    )
+    if not can_view_summary(request.user, retro):
+        raise Http404("No such retrospective summary.")
+    # The summary is a live view from DISCUSS and the final record at COMPLETE;
+    # before DISCUSS there is no agenda, no discussion and no outcome to show, so
+    # it is not told apart from an id that was never used.
+    if not retro.has_reached(Retrospective.Stage.DISCUSS):
+        raise Http404("This retrospective has no summary yet.")
+
+    ordered_clusters, totals = _agenda_clusters(retro)
+    topics = [
+        {
+            "name": cluster.name,
+            "weight": totals.get(cluster.pk, 0),
+            "outcome": cluster.get_status_display(),
+        }
+        for cluster in ordered_clusters
+    ]
+    card_groups, ungrouped_cards = _card_groups(retro, ordered_clusters)
+    note_groups, retro_wide_notes = _note_groups(retro, ordered_clusters)
+    submitted, did_not_submit = _participation(retro)
+
+    # Every query filters to confirmed rows at the queryset level, not in the
+    # template: a DRAFT decision or action item #23 extracted and nobody reviewed
+    # is invisible here, exactly as it is on #17's outcomes list.
+    decisions = list(retro.decisions.filter(status=Decision.Status.CONFIRMED))
+    action_items = list(
+        retro.action_items.filter(review_status=ActionItem.ReviewStatus.CONFIRMED).select_related(
+            "owner"
+        )
+    )
+
+    # Team-wide totals a reader could reach by counting what the page already
+    # shows — how many cards, how many of each category, how many submitted and how
+    # many did not — and nothing that splits the cards any other way. No anonymity
+    # count: `_docs/decisions.md` item 10 with item 3a.
+    all_cards = [card for group in card_groups for card in group["cards"]] + ungrouped_cards
+    category_counts = [
+        {"label": label, "count": sum(1 for card in all_cards if card.category == value)}
+        for value, label in Card.Category.choices
+    ]
+
+    summary_text = retro.extraction_summary
+    recorded_anything = bool(
+        topics
+        or note_groups
+        or retro_wide_notes
+        or decisions
+        or action_items
+        or all_cards
+        or summary_text
+    )
+
+    return render(
+        request,
+        "retro/summary.html",
+        {
+            "retro": retro,
+            "cycle": retro.cycle,
+            "project": retro.cycle.project,
+            "is_complete": retro.is_complete,
+            "summary_text": summary_text,
+            "topics": topics,
+            "note_groups": note_groups,
+            "retro_wide_notes": retro_wide_notes,
+            "decisions": decisions,
+            "action_items": action_items,
+            "submitted": submitted,
+            "did_not_submit": did_not_submit,
+            "card_groups": card_groups,
+            "ungrouped_cards": ungrouped_cards,
+            "total_cards": len(all_cards),
+            "category_counts": category_counts,
+            "submitted_count": len(submitted),
+            "did_not_submit_count": len(did_not_submit),
+            "recorded_anything": recorded_anything,
+        },
     )

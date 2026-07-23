@@ -1,0 +1,232 @@
+{% extends "base_app.html" %}
+{% comment %}
+  The retrospective's record (#25): one page that tells the whole story and tells
+  the same story to every reader. Nothing on it varies with who is reading it.
+
+  `_docs/decisions.md` item 10 governs the card list below absolutely. A card is
+  its category and its text and nothing else — every card renders identically to
+  every other. Where a "who wrote it" or an "Anonymous" label might sit there is
+  nothing at all. No author, no anonymity flag, no anonymity count, no card handle
+  (`pk` or `public_id`) is rendered, and the cards come from `revealed_cards()`,
+  so their order is `position` and never submission order. The card list is the
+  one `#feedback-cards` container; the notes, participation, decisions and action
+  items render outside it, so the display names the page legitimately carries —
+  note authors, action owners, the participation list — never appear beside a
+  card. The viewer's own cards are not marked here, unlike the board.
+
+  A server-rendered read view, not the React island: it renders no control that
+  mutates anything, so opening it changes nothing and it looks the same at every
+  refresh for every member.
+{% endcomment %}
+
+{% block title %}Retrospective summary — week of {{ cycle.week_start|date:'j F Y' }}{% endblock %}
+
+{% block content %}
+  <h1 class="page-heading">Retrospective summary</h1>
+  <p class="mt-2 text-sm text-slate-600">
+    <a href="{{ project.get_absolute_url }}" class="link">{{ project.name }}</a>
+    —
+    <a href="{{ retro.get_absolute_url }}" class="link">the retrospective</a>
+    for the week of {{ cycle.week_start|date:'j F Y' }}
+  </p>
+
+  {% if is_complete %}
+    <p class="mt-2 text-sm text-slate-600" data-summary-state="final">
+      This is the final record of the retrospective.
+    </p>
+  {% else %}
+    <p class="mt-2 text-sm text-slate-600" data-summary-state="live">
+      This retrospective is still in progress. This summary is a live view of
+      where things stand.
+    </p>
+  {% endif %}
+
+  {% if not recorded_anything %}
+    <p class="mt-8 text-sm text-slate-600" data-empty="summary">
+      This retrospective produced no recorded outcomes.
+    </p>
+  {% endif %}
+
+  {% if summary_text %}
+    <section class="panel mt-8">
+      <h2 class="section-heading">Summary</h2>
+      <p class="mt-2 whitespace-pre-line">{{ summary_text }}</p>
+    </section>
+  {% endif %}
+
+  {% if topics %}
+    <section class="panel mt-8">
+      <h2 class="section-heading">Discussion topics</h2>
+      <ul class="list-rows">
+        {% for topic in topics %}
+          <li data-topic-outcome="{{ topic.outcome }}">
+            <p class="font-medium">{{ topic.name }}</p>
+            <p class="text-xs text-slate-500">
+              {{ topic.weight }} vote{{ topic.weight|pluralize }} — {{ topic.outcome }}
+            </p>
+          </li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {% if note_groups or retro_wide_notes %}
+    <section class="panel mt-8">
+      <h2 class="section-heading">Notes</h2>
+      {% for group in note_groups %}
+        <div class="mt-4">
+          <h3 class="font-medium">{{ group.name }}</h3>
+          <ul class="list-rows">
+            {% for note in group.notes %}
+              <li>
+                <p>{{ note.text }}</p>
+                <p class="text-xs text-slate-500">{{ note.author.display_name }}</p>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endfor %}
+      {% if retro_wide_notes %}
+        <div class="mt-4">
+          <h3 class="font-medium">About the retrospective</h3>
+          <ul class="list-rows">
+            {% for note in retro_wide_notes %}
+              <li>
+                <p>{{ note.text }}</p>
+                <p class="text-xs text-slate-500">{{ note.author.display_name }}</p>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  {% if decisions %}
+    <section class="panel mt-8">
+      <h2 class="section-heading">Decisions</h2>
+      <ul class="list-rows">
+        {% for decision in decisions %}
+          <li>
+            <p>{{ decision.text }}</p>
+            {% if decision.cluster %}
+              <p class="text-xs text-slate-500">About: {{ decision.cluster.name }}</p>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {% if action_items %}
+    <section class="panel mt-8">
+      <h2 class="section-heading">Action items</h2>
+      <ul class="list-rows">
+        {% for item in action_items %}
+          <li data-status="{{ item.status }}">
+            <p>{{ item.description }}</p>
+            <p class="text-xs text-slate-500">
+              {% if item.is_unassigned %}
+                <span class="font-medium">Unassigned</span>
+              {% else %}
+                Owner: {{ item.owner.display_name }}
+              {% endif %}
+              —
+              {% if item.due_date %}
+                Due {{ item.due_date|date:'j F Y' }}{% if item.is_overdue %}
+                  <span class="font-medium text-red-700">(overdue)</span>
+                {% endif %}
+              {% else %}
+                No due date
+              {% endif %}
+              —
+              {{ item.get_status_display }}
+            </p>
+          </li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {% comment %}
+    The feedback cards. One container with a stable id, item 10's card list: a
+    card is its category and its text and that is the whole of it. No author, no
+    anonymity mark, no handle, no own-card mark — every card renders identically
+    to every other. Cards come from `revealed_cards()`, so `position` order and
+    never submission order; the ungrouped cards come last in a group of their own.
+  {% endcomment %}
+  {% if card_groups or ungrouped_cards %}
+    <section class="panel mt-8" id="feedback-cards">
+      <h2 class="section-heading">Feedback</h2>
+      <p class="text-xs text-slate-500">
+        {{ total_cards }} card{{ total_cards|pluralize }} in total —
+        {% for count in category_counts %}{{ count.label }}: {{ count.count }}{% if not forloop.last %} · {% endif %}{% endfor %}
+      </p>
+      {% for group in card_groups %}
+        <div class="mt-4">
+          <h3 class="font-medium">{{ group.name }}</h3>
+          <ul class="list-rows">
+            {% for card in group.cards %}
+              <li class="feedback-card">
+                <span class="font-medium">{{ card.get_category_display }}</span>
+                <p>{{ card.text }}</p>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endfor %}
+      {% if ungrouped_cards %}
+        <div class="mt-4">
+          <h3 class="font-medium">Ungrouped</h3>
+          <ul class="list-rows">
+            {% for card in ungrouped_cards %}
+              <li class="feedback-card">
+                <span class="font-medium">{{ card.get_category_display }}</span>
+                <p>{{ card.text }}</p>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  <section class="panel mt-8">
+    <h2 class="section-heading">Participation</h2>
+    <p class="text-xs text-slate-500">
+      {{ submitted_count }} submitted — {{ did_not_submit_count }} did not submit
+    </p>
+    <div class="mt-4">
+      <h3 class="font-medium">Submitted</h3>
+      {% if submitted %}
+        <ul class="list-rows">
+          {% for member in submitted %}
+            <li>{{ member.display_name }}</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="mt-2 text-sm text-slate-600" data-empty="submitted">
+          Nobody submitted this week.
+        </p>
+      {% endif %}
+    </div>
+    <div class="mt-4">
+      <h3 class="font-medium">Did not submit</h3>
+      {% if did_not_submit %}
+        <ul class="list-rows">
+          {% for member in did_not_submit %}
+            <li>{{ member.display_name }}</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="mt-2 text-sm text-slate-600" data-empty="did-not-submit">
+          Everyone submitted this week.
+        </p>
+      {% endif %}
+    </div>
+  </section>
+
+  <p class="mt-6 text-sm">
+    <a href="{{ retro.get_absolute_url }}" class="link">Back to the retrospective</a>
+  </p>
+{% endblock %}

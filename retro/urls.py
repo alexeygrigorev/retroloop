@@ -12,6 +12,12 @@ urlpatterns = [
     ),
     path("retrospectives/<int:pk>/", views.retro_detail, name="retro-detail"),
     path("retrospectives/<int:pk>/advance/", views.retro_advance, name="retro-advance"),
+    # The retrospective's record (#25): the topics and their outcomes, the notes,
+    # the confirmed decisions and action items, the participation, and the feedback
+    # cards grouped by cluster. Addressed by the retrospective's integer pk — a
+    # summary is not a card, so it carries no `public_id` (item 9), and no card
+    # handle reaches the page it renders.
+    path("retrospectives/<int:pk>/summary/", views.retro_summary, name="retro-summary"),
     # Decisions and action items (#17). The list hangs off the retrospective;
     # each entry is then addressed by its own integer pk. A decision and an
     # action item are not cards, so they carry no `public_id` — item 9 is about
