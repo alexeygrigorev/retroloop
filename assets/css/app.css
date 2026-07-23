@@ -74,6 +74,91 @@
       font-mono text-sm break-all;
   }
 
+  /* ------------------------------------------------------------- the board */
+
+  /* The React island (#14) styles itself only with the component classes named
+     here, because Tailwind scans templates and not `.jsx`, so a raw utility
+     written in the bundle alone would never be compiled. The board's tests hold
+     the bundle to this same set. */
+
+  .board {
+    @apply mt-2 flex flex-col gap-4 text-sm text-slate-700;
+  }
+
+  .board-note {
+    @apply text-sm text-slate-500;
+  }
+
+  .board-banner {
+    @apply mt-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900;
+  }
+
+  .board-toolbar {
+    @apply mt-2 flex flex-wrap items-center gap-2;
+  }
+
+  .board-input {
+    @apply rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900
+      placeholder:text-slate-400;
+  }
+
+  /* A row of columns that scrolls sideways rather than widening the page when a
+     board grows more clusters than fit. */
+  .board-columns {
+    @apply mt-2 flex gap-4 overflow-x-auto pb-2;
+  }
+
+  .board-column {
+    @apply flex w-64 shrink-0 flex-col gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3;
+  }
+
+  .board-column-head {
+    @apply flex items-center justify-between gap-2;
+  }
+
+  .board-column-title {
+    @apply flex flex-wrap items-center gap-2 text-sm font-medium text-slate-700;
+  }
+
+  /* A small pill: the card's category, the "Yours" mark, a "Suggested" cluster.
+     One shape for every short label the board puts beside a thing. */
+  .board-tag {
+    @apply inline-block rounded-full border border-slate-300 bg-white px-2 py-0.5
+      text-xs font-medium text-slate-600;
+  }
+
+  .board-actions {
+    @apply flex flex-wrap items-center gap-2 text-xs text-slate-600;
+  }
+
+  .board-select {
+    @apply flex items-center gap-1 text-xs text-slate-600;
+  }
+
+  .board-select select {
+    @apply rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900;
+  }
+
+  .board-check {
+    @apply flex items-center gap-1 text-xs text-slate-600;
+  }
+
+  .board-cards {
+    @apply flex flex-col gap-2;
+  }
+
+  .board-card {
+    @apply flex flex-col gap-1 rounded-md border border-slate-200 bg-white p-2;
+  }
+
+  .board-card-head {
+    @apply flex flex-wrap items-center gap-1;
+  }
+
+  .board-card-text {
+    @apply text-sm text-slate-800;
+  }
+
   /* ------------------------------------------------------------------ forms */
 
   /* The form treatment. A form renders `{{ form.as_div }}` inside an element

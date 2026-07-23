@@ -749,7 +749,9 @@ def test_the_payload_gains_no_key_and_loses_none(
     loudly as a missing one. The `mine` boolean is the viewer's own-card mark
     (`_docs/decisions.md` item 10); the bootstrap deliberately does not carry it,
     since the first poll from the state endpoint replaces the bootstrap with a
-    body that does.
+    body that does. #14 added `urls` to the bootstrap — the endpoints the island
+    reads and writes through, each addressing the retrospective by its integer
+    pk and never a card by any handle — and nothing else.
     """
     log_in(client, ada)
 
@@ -759,7 +761,7 @@ def test_the_payload_gains_no_key_and_loses_none(
     assert set(state) == {"id", "stage", "version", "changed", "cards", "clusters", "votes"}
     state_card_keys = {"id", "category", "text", "cluster", "mine"}
     assert all(set(card) == state_card_keys for card in state["cards"])
-    assert set(bootstrap) == {"id", "stage", "version", "cards"}
+    assert set(bootstrap) == {"id", "stage", "version", "cards", "urls"}
     assert all(set(card) == {"id", "category", "text"} for card in bootstrap["cards"])
 
 

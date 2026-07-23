@@ -381,7 +381,7 @@ def test_there_is_exactly_one_mount_point_in_the_application(as_viewer, retro) -
 
 
 @pytest.mark.django_db
-def test_the_bootstrap_carries_the_id_the_stage_the_version_and_nothing_else(
+def test_the_bootstrap_carries_the_id_the_stage_the_version_the_urls_and_nothing_else(
     as_viewer, retro, cycle, viewer
 ) -> None:
     write_card(cycle, viewer, "Continue the Friday demo", category="CONTINUE")
@@ -390,7 +390,8 @@ def test_the_bootstrap_carries_the_id_the_stage_the_version_and_nothing_else(
 
     payload = bootstrap_of(as_viewer.get(detail_url(retro)).content.decode())
 
-    assert set(payload) == {"id", "stage", "version", "cards"}
+    # #14 adds `urls`, the endpoints the island talks to. Nothing else joins it.
+    assert set(payload) == {"id", "stage", "version", "cards", "urls"}
     assert payload["id"] == retro.pk
     assert payload["stage"] == Retrospective.Stage.DRAFT
     assert payload["version"] == 7
@@ -508,10 +509,19 @@ def test_the_view_builds_the_bootstrap_from_the_viewer_not_from_the_cycle(
 
 @pytest.mark.parametrize(
     "forbidden",
-    ["fetch(", "XMLHttpRequest", "EventSource", "WebSocket", "setInterval", "setTimeout"],
+    ["XMLHttpRequest", "EventSource", "WebSocket", "setInterval"],
 )
-def test_the_island_makes_no_request_of_its_own(forbidden: str) -> None:
-    """#14 wires the board to #11's state endpoint. This one is offline."""
+def test_the_island_opens_no_socket_and_never_poll_storms(forbidden: str) -> None:
+    """#14 makes the island go online, but by one route only.
+
+    It reads with `fetch` and paces itself with `setTimeout`, so this no longer
+    forbids those — the poll-loop and mutation tests in `tests/test_board_ui.py`
+    assert they are present. What stays forbidden is every other channel: SSE
+    (`EventSource`), WebSockets, and `XMLHttpRequest` are out of scope, and
+    `setInterval` is too — its fixed cadence fires again whether or not the last
+    request came back, which is the storm the self-scheduling `setTimeout` loop
+    exists to avoid.
+    """
     assert forbidden not in ISLAND_SOURCE
 
 
@@ -522,17 +532,56 @@ def test_the_island_invents_no_endpoint() -> None:
     assert not re.search(r"https?://", ISLAND_SOURCE)
 
 
-def test_the_island_renders_what_it_was_handed_and_toggles_it_from_its_own_state() -> None:
-    """The two things a person checks on screen, held to the source that does them."""
+def test_the_island_renders_the_board_and_owns_its_state() -> None:
+    """#14 replaces #13's demo with the real board, held to the source that draws it."""
     assert "useState" in ISLAND_SOURCE
     assert "stage" in ISLAND_SOURCE and "version" in ISLAND_SOURCE
-    assert "Hide my cards" in ISLAND_SOURCE and "Show my cards" in ISLAND_SOURCE
+    # It draws columns of clustered cards, not the collapse/expand demo.
+    assert "board-columns" in ISLAND_SOURCE
     assert "onClick" in ISLAND_SOURCE
 
 
+def test_the_placeholder_demo_button_is_gone_from_the_bundle() -> None:
+    """#14: the collapse/expand button #13 used to prove React was alive is gone,
+    from the source and from the built bundle — not merely hidden."""
+    assert "Hide my cards" not in ISLAND_SOURCE
+    assert "Show my cards" not in ISLAND_SOURCE
+    assert "data-board-toggle" not in ISLAND_SOURCE
+
+
 def test_the_island_styles_itself_with_the_named_components_only() -> None:
-    """`assets/css/app.css` scans templates, so a raw utility in .jsx is never built."""
-    named = {"section-heading", "list-rows", "btn-secondary", "panel", "link", "btn-primary"}
+    """`assets/css/app.css` scans templates, so a raw utility in .jsx is never built.
+
+    #14 adds the board's own component classes to `app.css`; the set below grows
+    with them, and the compiled stylesheet is asserted to carry every one in
+    `tests/test_board_ui.py` so a class named here but never built cannot pass.
+    """
+    named = {
+        "section-heading",
+        "list-rows",
+        "btn-secondary",
+        "panel",
+        "link",
+        "btn-primary",
+        # The board (#14).
+        "board",
+        "board-note",
+        "board-banner",
+        "board-toolbar",
+        "board-input",
+        "board-columns",
+        "board-column",
+        "board-column-head",
+        "board-column-title",
+        "board-tag",
+        "board-actions",
+        "board-select",
+        "board-check",
+        "board-cards",
+        "board-card",
+        "board-card-head",
+        "board-card-text",
+    }
 
     for value in re.findall(r'className="([^"]+)"', ISLAND_SOURCE):
         for component in value.split():
