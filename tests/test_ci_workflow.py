@@ -171,7 +171,7 @@ def test_one_job_on_ubuntu_with_a_timeout_and_no_matrix() -> None:
     text = commands()
 
     assert "runs-on: ubuntu-latest" in text
-    assert "timeout-minutes: 15" in text
+    assert "timeout-minutes: 30" in text
     assert "strategy:" not in text
     assert "matrix:" not in text
 
