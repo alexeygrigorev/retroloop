@@ -245,7 +245,11 @@ def test_a_facilitator_is_shown_the_open_a_cycle_link(
 
     html = client.get(project.get_absolute_url()).content.decode()
 
-    assert "Open a feedback cycle" in html
+    # The dashboard (#26) labels the button for its context: "Open the first
+    # cycle" on a brand-new project, "Open a feedback cycle" once the project
+    # has cycles but none is collecting. Either way the facilitator is offered
+    # the create form; the link to it is the guarantee this test protects.
+    assert "Open the first cycle" in html or "Open a feedback cycle" in html
     assert create_url(project) in html
 
 
