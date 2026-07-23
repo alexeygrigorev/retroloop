@@ -116,6 +116,20 @@ run, a build. Poll it with a ceiling, and if it never arrives say so.
 "Did not recover within two minutes" is a finding, and often a FAIL.
 Silence is not.
 
+Never `pkill -f pytest` to clean up. Every worktree on this machine runs
+its own suite against its own database, so that pattern reaches into
+another agent's run and kills it mid-test - the victim then reports an
+aborted suite that looks like a broken branch and is not. Kill a
+background job by the id the tool gave you, or let it finish. If you did
+not start it, do not kill it.
+
+One agent per worktree at a time. The database is isolated per worktree,
+not per agent, so an engineer still finishing in a worktree and a
+reviewer starting in the same one share one `test_*` database and will
+drop it under each other. An implementer commits, pushes and is done
+before a reviewer is pointed at that worktree; the orchestrator does not
+overlap them.
+
 This binds the orchestrator too. A suite that is killed for running
 long does not necessarily stop - the `pytest` child can outlive the
 command that launched it, still holding its `test_*` database. Starting
