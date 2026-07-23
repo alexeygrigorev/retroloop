@@ -60,6 +60,13 @@ class Retrospective(models.Model):
     # A field with a default and no UI in this task: #14 spends them, #6 and the
     # settings screens may one day let a facilitator change the number.
     votes_per_member = models.PositiveSmallIntegerField(default=3)
+    # Where #22's clustering job records that it could not group the cards, in
+    # words a facilitator reads on the retrospective page. Empty is the normal
+    # state: the job runs after the reveal has committed, so a failure here
+    # leaves the stage where it is and the cards simply ungrouped. It is a
+    # message and never a traceback — the stack trace goes to the worker log,
+    # not onto a page every member of the project can open.
+    clustering_error = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

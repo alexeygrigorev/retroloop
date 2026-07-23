@@ -187,4 +187,10 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 # suite runs the whole pipeline with no key and no network.
 TRANSCRIPTION_CLIENT = "ai.transcription.OpenAITranscriptionClient"
 
+# Which client the clustering job builds, on the same terms as
+# TRANSCRIPTION_CLIENT above: a structural fact, not a per-deployment tune, so a
+# dotted path rather than an env var. `config/settings_test.py` points it at an
+# inert stand-in in `ai.fakes` so the suite runs with no key and no network.
+CLUSTERING_CLIENT = "ai.clustering.OpenAIClusteringClient"
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

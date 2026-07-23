@@ -88,6 +88,20 @@
     <div id="retro-board"></div>
   </section>
 
+  {% if retro.clustering_error %}
+    {% comment %}
+      The clustering job (#22) runs after the reveal has committed, so a failure
+      here does not touch the stage — the cards are simply ungrouped. It is
+      recorded on the retrospective so a facilitator reads what happened here,
+      rather than it disappearing into the worker log. The message carries no
+      card text and no traceback; it says what to do next.
+    {% endcomment %}
+    <section class="panel mt-8" data-clustering-error>
+      <h2 class="section-heading">Automatic grouping</h2>
+      <p class="mt-2 text-sm text-slate-600">{{ retro.clustering_error }}</p>
+    </section>
+  {% endif %}
+
   {% if retro.is_complete %}
     <p class="mt-6 text-sm text-slate-600">
       This retrospective is complete. It does not move again, and there is no

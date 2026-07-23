@@ -69,4 +69,10 @@ VITE_MANIFEST = BASE_DIR / "tests" / "fixtures" / "vite_manifest.json"
 # cannot be spent by a test run; the tests that prove the missing-key failure
 # and the SDK call itself set what they need for themselves.
 TRANSCRIPTION_CLIENT = "ai.fakes.EchoTranscriptionClient"
+# Inert on purpose: the clustering job is enqueued by every reveal, and a
+# stand-in that grouped cards would rewrite the board under every fixture that
+# reveals a cycle with cards. The suite's default therefore suggests nothing,
+# and the clustering tests inject a client that does — a scripted one, or the
+# real client driven by a fake SDK.
+CLUSTERING_CLIENT = "ai.fakes.NullClusteringClient"
 OPENAI_API_KEY = ""

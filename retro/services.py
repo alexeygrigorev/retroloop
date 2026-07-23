@@ -98,14 +98,28 @@ def _on_reveal(retro: Retrospective) -> None:
     recoverable, which is why it is reached only through a transition the stage
     machine allows exactly once.
 
-    Not yet implemented, and a no-op until it is: #22 enqueues the clustering
-    job. It will enqueue on commit, never inside this block.
+    Then #22's clustering job is enqueued *on commit* — never inside this block.
+    A worker is another process on another connection: a job queued by this
+    transaction could be claimed before it commits and read cards that are not
+    there yet, or survive a rollback that threw the reveal away. So the enqueue
+    waits for the commit, after which the cards are frozen, shuffled and
+    anonymised and the job clusters what really landed. The job's own failure
+    never reaches back here: it runs after this transition has committed, so a
+    board that could not be clustered is still a board that was revealed.
     """
     if retro.cycle.status == FeedbackCycle.Status.COLLECTING:
         retro.cycle.status = FeedbackCycle.Status.CLOSED
         retro.cycle.save(update_fields=["status"])
 
     reveal_cycle(retro.cycle)
+
+    # Imported here rather than at module scope: `config.tasks` is imported
+    # while the app registry is still loading, and `retro.services` is on the
+    # path that loads it. The enqueue happens on commit (#18), so it is a plain
+    # function call now and a queued job only once this transaction lands.
+    from config.tasks import cluster_retrospective, enqueue_on_commit
+
+    enqueue_on_commit(cluster_retrospective, retro.pk)
 
 
 def _on_cluster(retro: Retrospective) -> None:
