@@ -88,6 +88,61 @@ jobs:
       # Written outside the checkout so the suite's own walks over the working
       # tree never see it.
       JUNIT_REPORT: ${{ github.workspace }}/../junit.xml
+      # The committed shape of the suite, and the single source of truth for the
+      # gates below: one line per test file, `basename count`, where count is the
+      # number of tests that file contributes to a collection. This is a per-file
+      # expectation on purpose (#72). A single total, however it is measured,
+      # cannot see a subset dropped from one file while the total is lowered to
+      # match - a collection hook (collect_ignore, modifyitems, pycollect_makeitem,
+      # generate_tests) can shrink one file and the number is edited down and
+      # every whole-suite check agrees with itself. Pinned per file, dropping 36
+      # tests from test_auth.py fails on test_auth.py whatever the total does and
+      # whatever hook did it.
+      #
+      # This subsumes the file set (it is the keys), the "every file contributes
+      # something" check (a file whose count went to zero), and the total (the
+      # sum). EXPECTED_TESTS is derived, not committed a second time: the gates
+      # sum this map. Every branch that adds, removes or renames a test file, or
+      # changes how many tests one file runs, edits the one line for that file in
+      # the same commit, and the diff shows it. The failing gate names the file
+      # and the number to write. Regenerate the whole block with the command in
+      # AGENTS.md's CI section rather than hand-counting.
+      TEST_COUNTS: |
+        test_asset_fixture.py 30
+        test_audio.py 28
+        test_auth.py 41
+        test_board.py 81
+        test_board_mutations.py 226
+        test_board_ui.py 26
+        test_cards.py 71
+        test_ci_workflow.py 60
+        test_clustering.py 44
+        test_compose_worker.py 8
+        test_cycles.py 37
+        test_dashboard.py 20
+        test_discussion.py 81
+        test_env_example.py 8
+        test_extraction.py 70
+        test_home.py 1
+        test_island.py 42
+        test_layout.py 31
+        test_media_sweeper.py 27
+        test_meetings.py 84
+        test_outcomes.py 17
+        test_permissions.py 423
+        test_projects.py 41
+        test_public_id.py 56
+        test_retro.py 131
+        test_reveal.py 66
+        test_review.py 32
+        test_seed_demo.py 16
+        test_styling.py 97
+        test_summary.py 25
+        test_tasks.py 15
+        test_template_comments.py 86
+        test_template_urls.py 267
+        test_transcription.py 58
+        test_votes.py 46
 
     steps:
       - uses: actions/checkout@v7
@@ -246,20 +301,20 @@ jobs:
         # the gate below.
         run: uv run pytest -rs --junitxml="$JUNIT_REPORT"
 
-      - name: Fail if fewer tests ran than the floor
+      - name: Fail if the number of tests that ran is not the expected count
         # The skip gate below reads <skipped> elements, and a test that is never
         # collected writes no <testcase> at all - so removing a whole file from
         # collection is invisible to it. QA proved that: `--ignore=tests/...` in
         # addopts produced a fully green run with a fifth of the suite gone. The
-        # count is therefore checked as well, against a floor committed to this
-        # file. The two gates are independent and neither replaces the other.
-        env:
-          # The floor: the number of tests this suite is known to run. When the
-          # suite genuinely grows the number is raised deliberately, in this one
-          # line. It is never lowered to make a build pass. A run that reports
-          # fewer tests than this has lost tests, and losing tests is the
-          # failure being caught here, not a reason to edit the number down.
-          MINIMUM_TESTS: "1383"
+        # count of tests that ran is therefore checked as well.
+        #
+        # The expected number is the sum of TEST_COUNTS, not a second committed
+        # figure that could drift from it - one source of truth (#72). This gate
+        # reads the JUnit report the suite wrote and catches a run that produced
+        # fewer results than the collection promised (a crash mid-run, a runtime
+        # deselection); the per-file gate further down re-collects the suite and
+        # checks each file's collected count, which is what catches a suite
+        # reshaped so the total still matches.
         run: |
           python3 - <<'PY'
           import os
@@ -267,24 +322,34 @@ jobs:
           import xml.etree.ElementTree as ET
           from pathlib import Path
 
+          expected = sum(
+              int(line.split()[1])
+              for line in os.environ["TEST_COUNTS"].splitlines()
+              if line.strip()
+          )
           report = Path(os.environ["JUNIT_REPORT"])
-          floor = int(os.environ["MINIMUM_TESTS"])
           if not report.is_file():
               sys.exit(f"::error::{report} is missing - pytest wrote no report.")
 
           root = ET.parse(report).getroot()
           ran = sum(int(suite.get("tests", 0)) for suite in root.iter("testsuite"))
-          if ran < floor:
-              print(f"::error::{ran} test(s) ran, below the floor of {floor}. Tests left the run.")
-              print("  A test dropped from collection writes no result at all, so the skip")
-              print("  gate cannot see it - this count is what catches it. Find the tests.")
-              print("  MINIMUM_TESTS in .github/workflows/ci.yml is the floor. Raising it")
-              print("  is that one line; it is never lowered to make a build pass.")
+          if ran != expected:
+              print(f"::error::{ran} test(s) ran, expected exactly {expected}.")
+              if ran < expected:
+                  print(f"  {expected - ran} test(s) that this suite is known to run did not")
+                  print("  run at all. A test dropped from collection writes no result, so the")
+                  print("  skip gate cannot see it - this count is what catches it. Look for an")
+                  print("  --ignore in addopts, a collection hook in tests/conftest.py, or a")
+                  print("  file that left the tree, and be sure the loss is intended.")
+              else:
+                  print(f"  The suite grew by {ran - expected} test(s).")
+              print("  The expected count is the sum of TEST_COUNTS in")
+              print("  .github/workflows/ci.yml. When the change is intended, regenerate that")
+              print("  block with the command in AGENTS.md, in the same commit that changes the")
+              print("  suite. The per-file gate below names which file's count moved.")
               sys.exit(1)
 
-          print(f"{ran} test(s) ran, floor {floor}.")
-          if ran > floor:
-              print(f"The suite has grown. Raise the floor in one line: MINIMUM_TESTS: \"{ran}\".")
+          print(f"{ran} test(s) ran, exactly the expected {expected}.")
           PY
 
       - name: Fail if any test was skipped
@@ -321,4 +386,161 @@ jobs:
               sys.exit(1)
 
           print("No test skipped.")
+          PY
+
+      - name: Fail if any test file's collected count is not its committed count
+        # The gate above reads the JUnit report. It catches a run that produced
+        # fewer results than the collection promised, but not a suite whose shape
+        # was changed so the total still matches. Every earlier version of this
+        # check pinned a single whole-suite number, and every one was beaten by
+        # dropping tests from one place and adding them in another, or by a
+        # collection hook that shrinks the suite while the committed number is
+        # edited down to agree with it:
+        #
+        #   - a file renamed off test_*.py or `git rm`'d, cases added elsewhere;
+        #   - collect_ignore / --ignore, dropping a whole file;
+        #   - pytest_collection_modifyitems, deselecting after collection;
+        #   - pytest_pycollect_makeitem / pytest_generate_tests, suppressing
+        #     during the collection tree-walk, before any per-item counter fires.
+        #
+        # A single total cannot see a subset dropped from one file while the total
+        # is lowered to match. TEST_COUNTS pins the number per file, and this step
+        # collects the suite and checks each file's collected count against it.
+        # Dropping 36 tests from test_auth.py fails on test_auth.py whatever the
+        # total does and whatever hook did the dropping - the count is measured
+        # from session.items, what actually runs, so any suppression at any stage
+        # shows up as that file's number falling. This subsumes the file set (the
+        # keys), the silent-file check (a count of zero) and the total (the sum).
+        #
+        # It is a job step, not a collected test, on purpose: the suite's own
+        # guards live in tests/test_ci_workflow.py, a collected file, and
+        # --ignore-ing it disables them. This runs whatever pytest collects, so it
+        # fires even when the file that would have checked it is the one removed.
+        # The plugin is written outside the checkout so the suite's walks over the
+        # tree never see it and it cannot be the file that is dropped.
+        run: |
+          plugin_dir="$(mktemp -d)"
+          cat > "$plugin_dir/_ci_collect.py" <<'PLUGIN'
+          import collections
+          import json
+          import os
+
+          _raw = 0
+
+
+          def pytest_itemcollected(item):
+              # Belt-and-braces only: catches a modifyitems deselection, which
+              # runs after this fires. It is blind to tree-walk suppression, which
+              # is why the per-file counts below - taken from session.items, what
+              # survives every stage - are the real guard.
+              global _raw
+              _raw += 1
+
+
+          def pytest_collection_finish(session):
+              counts = collections.Counter(
+                  item.nodeid.split("::", 1)[0].rsplit("/", 1)[-1] for item in session.items
+              )
+              payload = {"raw": _raw, "items": len(session.items), "counts": dict(counts)}
+              with open(os.environ["CI_COLLECT_OUT"], "w") as handle:
+                  json.dump(payload, handle)
+          PLUGIN
+          out="$(mktemp)"
+          CI_COLLECT_OUT="$out" PYTHONPATH="$plugin_dir" \
+            uv run pytest --collect-only -q -p _ci_collect -p no:cacheprovider >/dev/null
+          CI_COLLECT_OUT="$out" python3 - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          result = json.loads(Path(os.environ["CI_COLLECT_OUT"]).read_text())
+          committed = {}
+          for line in os.environ["TEST_COUNTS"].splitlines():
+              line = line.strip()
+              if line:
+                  name, count = line.split()
+                  committed[name] = int(count)
+
+          actual = result["counts"]
+          raw = result["raw"]
+          items = result["items"]
+          tests_dir = Path(os.environ.get("TESTS_DIR", "tests"))
+          on_disk = {path.name for path in tests_dir.glob("test_*.py")}
+
+          errors = []
+
+          # No file may be pinned at zero. A count of zero and a collection of
+          # zero match, so without this a whole file could be suppressed - by an
+          # --ignore or a collect_ignore - and its line edited to 0, and the gate
+          # would agree. A file that contributes nothing is not listed at all; it
+          # is removed from the map and the tree together.
+          zeros = sorted(name for name, count in committed.items() if count <= 0)
+          if zeros:
+              errors.append(
+                  f"::error::{', '.join(zeros)} is pinned at 0 in TEST_COUNTS. A file that "
+                  "contributes no tests is not listed - remove it from the map and the tree, "
+                  "do not pin it at zero."
+              )
+
+          # The load-bearing check: every file's collected count is its committed
+          # count. The comparison universe is every file mentioned anywhere - the
+          # map, the collection, and the tree - so a file added, removed, renamed,
+          # or thinned all surface here.
+          mismatches = []
+          for name in sorted(set(committed) | set(actual) | on_disk):
+              want = committed.get(name)
+              got = actual.get(name, 0)
+              if want is None:
+                  mismatches.append((name, got, None, name in on_disk))
+              elif got != want:
+                  mismatches.append((name, got, want, name in on_disk))
+
+          if mismatches:
+              errors.append("::error::the per-file test counts are not the committed TEST_COUNTS.")
+              for name, got, want, on in mismatches:
+                  if want is None:
+                      where = "on disk, " if on else ""
+                      errors.append(f"  {name}: {where}collected {got}, not listed in TEST_COUNTS.")
+                  elif got == 0:
+                      errors.append(
+                          f"  {name}: collected nothing, TEST_COUNTS says {want} "
+                          "(removed, renamed off test_*.py, or wholly suppressed)."
+                      )
+                  else:
+                      errors.append(f"  {name}: collected {got}, TEST_COUNTS says {want}.")
+              errors.append(
+                  "  Regenerate the TEST_COUNTS block with the command in AGENTS.md's CI section"
+              )
+              errors.append("  and commit it in the same change. The lines that move:")
+              for name, got, want, on in mismatches:
+                  errors.append(f"    {name} {got}" if got else f"    (drop) {name}")
+
+          # One source of truth: the derived total is the sum of the map, and it
+          # has to equal what was collected. Redundant while every file matches;
+          # it names a map that sums wrong on its own.
+          committed_total = sum(committed.values())
+          if items != committed_total:
+              errors.append(
+                  f"::error::TEST_COUNTS sums to {committed_total}, but {items} tests were "
+                  "collected. The map and the suite disagree on the total."
+              )
+
+          # Belt-and-braces: a modifyitems deselection. Not load-bearing - the
+          # per-file counts catch it too - and blind to tree-walk suppression,
+          # which is exactly why it is not what this gate rests on.
+          if raw != items:
+              errors.append(
+                  f"::error::{raw - items} test(s) were deselected after collection "
+                  f"({raw} collected, {items} kept) - a modifyitems hook."
+              )
+
+          if errors:
+              print("\n".join(errors))
+              sys.exit(1)
+
+          print(
+              f"{items} test(s) collected across {len(committed)} files, "
+              "each exactly its committed count."
+          )
           PY

@@ -20,11 +20,14 @@ and a file that guards the gate is the last place to opt out of it.
 """
 
 import ast
+import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import textwrap
+from functools import cache
 from pathlib import Path
 
 from django.conf import settings
@@ -39,8 +42,13 @@ ALLOWED_ACTIONS = {"actions/checkout", "actions/setup-node", "astral-sh/setup-uv
 USES = re.compile(r"uses:\s*(\S+)")
 
 #: The two gates that read the JUnit report, by step name.
-COUNT_GATE = "Fail if fewer tests ran than the floor"
+COUNT_GATE = "Fail if the number of tests that ran is not the expected count"
 SKIP_GATE = "Fail if any test was skipped"
+
+#: The gate that collects the suite itself and pins a count per test file (#72).
+#: Runs as a job step, not a collected test, so dropping the guard file cannot
+#: disable it.
+PERFILE_GATE = "Fail if any test file's collected count is not its committed count"
 
 
 def source() -> str:
@@ -124,8 +132,8 @@ def run_gate(name: str, tmp_path: Path, report: str | None) -> subprocess.Comple
         location.write_text(report)
 
     environment = dict(os.environ, JUNIT_REPORT=str(location))
-    if "MINIMUM_TESTS" in step(name):
-        environment["MINIMUM_TESTS"] = str(floor())
+    if "TEST_COUNTS" in gate_script(name):
+        environment["TEST_COUNTS"] = counts_block()
 
     return subprocess.run(
         [sys.executable, "-c", gate_script(name)],
@@ -135,11 +143,193 @@ def run_gate(name: str, tmp_path: Path, report: str | None) -> subprocess.Comple
     )
 
 
-def floor() -> int:
-    """The committed floor on the number of tests, read out of the workflow."""
-    declared = re.findall(r'MINIMUM_TESTS: "(\d+)"', source())
-    assert len(declared) == 1, f"the floor is declared {len(declared)} times, not once"
-    return int(declared[0])
+def counts_block() -> str:
+    """The committed `TEST_COUNTS` block scalar, verbatim, read out of the workflow."""
+    match = re.search(r"\n {6}TEST_COUNTS: \|\n((?: {8}\S.*\n)+)", source())
+    assert match, "TEST_COUNTS is not declared as a block scalar in the job env"
+    return textwrap.dedent(match.group(1))
+
+
+def committed_counts() -> dict[str, int]:
+    """The committed `{basename: count}` map - the one source of truth."""
+    counts: dict[str, int] = {}
+    for line in counts_block().splitlines():
+        line = line.strip()
+        if line:
+            name, count = line.split()
+            counts[name] = int(count)
+    assert counts, "TEST_COUNTS is empty"
+    return counts
+
+
+def expected_tests() -> int:
+    """The committed number of tests - derived, the sum of the per-file map."""
+    return sum(committed_counts().values())
+
+
+# --------------------------------------------------------------------------
+# Running the per-file gate — issue #72, third round
+#
+# A single whole-suite total, however measured, cannot see a subset dropped from
+# one file while the total is lowered to match - QA beat every version of that
+# with a collection hook (collect_ignore, modifyitems, and finally
+# pytest_pycollect_makeitem, which suppresses during the tree-walk before any
+# per-item counter fires). The gate now pins a count per file and checks each
+# file's collected count against it: dropping tests from one file fails on that
+# file whatever the total does and whatever hook did it. These helpers lift its
+# plugin and its checker out of ci.yml and run them against collections built
+# for the occasion - the behaviour is executed, never string-matched.
+# --------------------------------------------------------------------------
+
+
+def plugin_script(name: str) -> str:
+    """The pytest plugin a named step writes to disk before collecting."""
+    heredoc = re.search(r"<<'PLUGIN'\n(.*?)\n *PLUGIN *$", step(name), re.S | re.M)
+    assert heredoc, f"the {name!r} step writes no PLUGIN heredoc"
+    return textwrap.dedent(heredoc.group(1))
+
+
+def collection(counts: dict[str, int], raw: int | None = None) -> str:
+    """A collection result of the shape the per-file gate's plugin writes."""
+    items = sum(counts.values())
+    return json.dumps(
+        {
+            "raw": items if raw is None else raw,
+            "items": items,
+            "counts": dict(counts),
+        }
+    )
+
+
+def run_perfile_gate(
+    tmp_path: Path,
+    *,
+    actual: dict[str, int],
+    committed: dict[str, int] | None = None,
+    on_disk: list[str] | None = None,
+    raw: int | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run the per-file gate's checker against a collection and a tests/ directory.
+
+    ``actual`` is the per-file collected count the plugin would report;
+    ``committed`` is the map in the workflow (the real one by default);
+    ``on_disk`` is the set of ``test_*.py`` files the checker globs (the keys of
+    ``actual`` plus ``committed`` by default), fabricated as empty files so the
+    on-disk comparison can be driven without moving real files.
+    """
+    committed = committed_counts() if committed is None else committed
+    if on_disk is None:
+        on_disk = sorted(set(actual) | set(committed))
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(dir=tmp_path))
+    tests_dir = scratch / "tests"
+    tests_dir.mkdir()
+    for name in on_disk:
+        (tests_dir / name).touch()
+
+    out = scratch / "collect.json"
+    out.write_text(collection(actual, raw=raw))
+
+    counts_text = "".join(f"{name} {count}\n" for name, count in sorted(committed.items()))
+    environment = dict(
+        os.environ,
+        CI_COLLECT_OUT=str(out),
+        TEST_COUNTS=counts_text,
+        TESTS_DIR=str(tests_dir),
+    )
+    return subprocess.run(
+        [sys.executable, "-c", gate_script(PERFILE_GATE)],
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+
+# --------------------------------------------------------------------------
+# Counting the tests there actually are — issue #72
+#
+# The number in the workflow is only worth anything if something checks it
+# against reality. #67 checked it against the count of `def test_` lines - 578 of
+# them against a suite of over 1,300, the rest being parametrized cases - so
+# `MINIMUM_TESTS: "600"` passed the whole workflow test file with three test
+# files' worth of room to spare. The number is therefore compared against a real
+# pytest collection: the same machinery that produces the run, including
+# `addopts`, including `tests/conftest.py` and any `collect_ignore` in it.
+#
+# Collection runs in a subprocess and does not touch the database, so this is a
+# few seconds and no fixtures. PYTEST_* variables are dropped from its
+# environment: PYTEST_ADDOPTS with a `-k` in it would otherwise let whoever ran
+# the suite decide what the suite is.
+# --------------------------------------------------------------------------
+
+#: Collects the suite and prints one line per collected test. `pytest.main` in a
+#: subprocess rather than a file on disk, so nothing is written anywhere.
+COLLECTOR = """
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+
+class Report:
+    def pytest_collection_finish(self, session):
+        for item in session.items:
+            print("collected " + item.nodeid)
+
+
+class IgnoreOneFile:
+    # Exactly what a `collect_ignore` entry in a conftest does: pytest's own
+    # pytest_ignore_collect hook is what reads `collect_ignore`, and this is
+    # that hook.
+    def __init__(self, path):
+        self.path = Path(path).resolve()
+
+    def pytest_ignore_collect(self, collection_path, config):
+        return True if collection_path == self.path else None
+
+
+plugins = [Report()]
+ignore = os.environ.get("COLLECT_IGNORE")
+if ignore:
+    plugins.append(IgnoreOneFile(ignore))
+
+sys.exit(pytest.main(["--collect-only", "-q", "-p", "no:cacheprovider"], plugins=plugins))
+"""
+
+
+@cache
+def collected(ignore: str | None = None) -> tuple[str, ...]:
+    """Every test pytest collects, as node ids, optionally with one file ignored."""
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("PYTEST_")}
+    if ignore is not None:
+        environment["COLLECT_IGNORE"] = str(BASE_DIR / ignore)
+
+    result = subprocess.run(
+        [sys.executable, "-c", COLLECTOR],
+        cwd=BASE_DIR,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    prefix = "collected "
+    ids = tuple(
+        line[len(prefix) :] for line in result.stdout.splitlines() if line.startswith(prefix)
+    )
+    assert ids, result.stdout + result.stderr
+    return ids
+
+
+def collected_by_file(ignore: str | None = None) -> dict[str, int]:
+    """The real collection grouped by file basename - `{basename: count}`."""
+    counts: dict[str, int] = {}
+    for node_id in collected(ignore=ignore):
+        name = node_id.partition("::")[0].rpartition("/")[2]
+        counts[name] = counts.get(name, 0) + 1
+    return counts
 
 
 # --------------------------------------------------------------------------
@@ -438,13 +628,17 @@ def test_the_skip_gate_reports_the_node_id_and_the_reason() -> None:
 
 
 # --------------------------------------------------------------------------
-# A test removed from collection is red too — issue #67
+# A test removed from collection is red too — issues #67 and #72
 #
 # The skip gate reads `<skipped>` elements. A test that is never collected
 # writes no `<testcase>` at all, so it is invisible to that gate: QA put
 # `--ignore=tests/test_audio.py` in addopts and got a green run with a fifth of
-# the suite gone. The count of tests that ran is checked against a committed
-# floor as well, and the two gates are independent.
+# the suite gone. The count of tests that ran is checked as well.
+#
+# #67 checked it against a floor. #72 makes it an exact count, because a floor
+# is only ever wrong in the direction nobody feels: the run that would tell you
+# to raise it is green and the run that tempts you to lower it is red. An exact
+# count moves in the commit that changes the suite or the build is red.
 # --------------------------------------------------------------------------
 
 
@@ -457,67 +651,455 @@ def test_the_test_count_gate_runs_after_the_suite_and_reads_the_same_report() ->
     assert 'get("tests"' in gate_script(COUNT_GATE)
 
 
-def test_the_floor_is_one_line_next_to_the_gate_that_reads_it() -> None:
-    block = step(COUNT_GATE)
+def test_the_committed_counts_are_the_one_source_of_truth() -> None:
+    text = source()
+    job_env = text.split("\n    steps:\n", 1)[0]
 
-    # Declared once, in the step that uses it, on a line of its own.
-    assert re.search(r'\n +MINIMUM_TESTS: "\d+"\n', block), block
-    assert len(re.findall(r'MINIMUM_TESTS: "\d+"', source())) == 1
+    # One committed fact, the per-file map, declared once as a block scalar in
+    # the job env. The count is derived from it (the sum), not committed a second
+    # time - so there is nothing to drift.
+    block = re.findall(r"\n {6}TEST_COUNTS: \|\n(?: {8}\S.*\n)+", text)
+    assert len(block) == 1, block
+    assert block[0] in job_env
 
-    # And the comment beside it - not the failure message, the comment someone
-    # editing the number reads first - says which way the number may move.
-    comments = "\n".join(line for line in block.splitlines() if line.lstrip().startswith("#"))
-    assert "never lowered to make a build pass" in comments, comments
-    assert "deliberately" in comments, comments
+    # The single-total facts it replaced are gone as committed values - no
+    # anonymous number survives that a subset drop could hide behind. Their names
+    # may still appear in prose (the comment explains that the count is now the
+    # derived sum), but not as a declared env key.
+    assert "MINIMUM_TESTS" not in text
+    assert re.search(r"\n +EXPECTED_TESTS:", text) is None
+    assert re.search(r"\n +TEST_FILES:", text) is None
 
 
-def test_the_floor_is_not_a_number_the_suite_would_clear_with_tests_missing() -> None:
-    """A floor of 1 would pass every mutilated run there is.
+def test_the_committed_counts_are_the_real_per_file_collection() -> None:
+    """The map is checked against a real collection, per file, not against text.
 
-    Every test function in `tests/` contributes at least one collected test, so
-    the number of them is a lower bound on an honest floor - and a floor set
-    below it would be one that a suite with whole files missing still clears.
+    This is what makes the number un-lowerable (criterion 3): a committed count
+    that the suite does not actually produce fails here, one step before CI. It
+    is per file, so it also catches the class QA rode all the way to a
+    `pytest_pycollect_makeitem` hook - a subset dropped from one file, the total
+    lowered to match - because the drop shows up as that one file's number.
     """
-    functions = sum(
-        len(re.findall(r"^def test_", path.read_text(), re.M))
-        for path in sorted((BASE_DIR / "tests").glob("test_*.py"))
-    )
+    actual = collected_by_file()
 
-    assert functions > 0
-    assert floor() >= functions, f"floor {floor()} is below the {functions} tests defined in tests/"
+    assert actual == committed_counts(), (
+        "the per-file collection is not TEST_COUNTS in .github/workflows/ci.yml. "
+        "Regenerate the block with the command in AGENTS.md and commit it in the "
+        f"same change. Collected: {dict(sorted(actual.items()))}"
+    )
+    # The derived total agrees with the collection, so the JUnit gate's number
+    # (the sum) is honest too.
+    assert expected_tests() == len(collected())
+
+
+def test_a_subset_dropped_from_one_file_shows_up_on_that_file() -> None:
+    """The move a single total cannot see, and the per-file map can.
+
+    `tests/test_audio.py` leaves collection through the hook a `collect_ignore`
+    feeds, and its tests are assumed to reappear elsewhere so the total is
+    restored. A single number is blind to that; the per-file map is not - the
+    audio line has moved even though the sum has not.
+    """
+    masked = collected_by_file(ignore="tests/test_audio.py")
+
+    # The total can be made to match again by cases added elsewhere...
+    restored_total = len(collected()) - committed_counts()["test_audio.py"]
+    assert sum(masked.values()) + committed_counts()["test_audio.py"] == expected_tests()
+    assert restored_total == sum(masked.values())
+
+    # ...but test_audio.py's own count has collapsed, and that is what the gate
+    # reads. No balancing act elsewhere restores this line.
+    assert masked.get("test_audio.py", 0) == 0
+    assert masked != committed_counts()
+
+
+def test_the_conftest_carries_no_collection_shrinking_hook(tmp_path: Path) -> None:
+    """#54 gave the project a `tests/conftest.py`, the natural home for a hide.
+
+    Four hooks can shrink a collection from here - `collect_ignore`,
+    `pytest_collection_modifyitems`, `pytest_pycollect_makeitem`,
+    `pytest_generate_tests` - and QA used three of them in turn. The grep is
+    documentation that none is present today; what actually catches any of them
+    at run time is the per-file gate, which reads each file's collected count
+    from `session.items` and so sees suppression at every stage. The last line
+    proves that: the audio file thinned to nothing is red against the real map.
+    """
+    conftest = BASE_DIR / "tests" / "conftest.py"
+    body = conftest.read_text()
+
+    assert conftest.is_file(), "tests/conftest.py is gone; collection no longer travels it"
+    for hook in (
+        "collect_ignore",
+        "pytest_collection_modifyitems",
+        "pytest_pycollect_makeitem",
+        "pytest_generate_tests",
+    ):
+        assert hook not in body, f"tests/conftest.py grew a {hook}"
+
+    assert collected_by_file() == committed_counts()
+
+    thinned = dict(committed_counts())
+    thinned["test_audio.py"] = 0
+    red = run_perfile_gate(tmp_path, actual=thinned)
+    assert red.returncode == 1, red.stdout + red.stderr
+    assert "test_audio.py: collected nothing" in red.stdout, red.stdout
+
+
+# --------------------------------------------------------------------------
+# The per-file gate, run against collections built for the occasion
+# --------------------------------------------------------------------------
+
+
+def test_the_perfile_gate_runs_after_the_suite_and_collects_independently() -> None:
+    # It is a job step, not a collected test - that is the whole point, so a file
+    # removed from collection cannot disable it. It collects the suite itself
+    # rather than reading the JUnit report the other two gates read.
+    assert index_of("uv run pytest") < index_of(PERFILE_GATE)
+    assert "pytest --collect-only" in step(PERFILE_GATE)
+    assert "JUNIT_REPORT" not in gate_script(PERFILE_GATE)
+
+    # The plugin is written outside the checkout, under a mktemp directory, so
+    # the suite's own walks over the tree never see it and it is not itself a
+    # file that could be dropped.
+    assert "mktemp" in step(PERFILE_GATE)
+    assert "PYTHONPATH" in step(PERFILE_GATE)
+
+
+def run_plugin(*extra_plugins: tuple[str, str]) -> dict:
+    """Run the gate's own plugin against the real suite, with optional injections.
+
+    Each extra plugin is ``(module_name, source)`` written beside the gate's
+    plugin and loaded with ``-p``. Returns the collection payload the plugin
+    writes - the same one the checker reads in CI.
+    """
+    with tempfile.TemporaryDirectory() as scratch_name:
+        scratch = Path(scratch_name)
+        (scratch / "_ci_collect.py").write_text(plugin_script(PERFILE_GATE))
+        plugin_args = ["-p", "_ci_collect"]
+        for module, body in extra_plugins:
+            (scratch / f"{module}.py").write_text(body)
+            plugin_args += ["-p", module]
+
+        out = scratch / "collect.json"
+        environment = {
+            key: value for key, value in os.environ.items() if not key.startswith("PYTEST_")
+        }
+        environment["CI_COLLECT_OUT"] = str(out)
+        environment["PYTHONPATH"] = str(scratch)
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "--collect-only",
+                "-q",
+                *plugin_args,
+                "-p",
+                "no:cacheprovider",
+            ],
+            cwd=BASE_DIR,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        return json.loads(out.read_text())
+
+
+def test_the_collection_plugin_groups_counts_by_file() -> None:
+    """The plugin from ci.yml, run against the real suite.
+
+    It reports a count per file, taken from `session.items` - what survives every
+    collection stage - and that grouping is exactly the committed map.
+    """
+    data = run_plugin()
+
+    assert data["counts"] == committed_counts(), data["counts"]
+    assert data["raw"] == data["items"] == expected_tests(), data
+
+
+def test_the_perfile_count_is_taken_after_tree_walk_suppression() -> None:
+    """The sixth attack, at the plugin: a `pytest_pycollect_makeitem` hook.
+
+    It suppresses test functions during the collection tree-walk, before any
+    per-item counter fires, so `raw` falls in lockstep with `items` - the check
+    that beat attack 5 (`raw != items`) is blind to it. The per-file counts are
+    not: they come from `session.items`, so `test_auth.py` falls to 5 there, and
+    the checker reads that against the committed 41.
+    """
+    makeitem = textwrap.dedent(
+        """
+        _seen = {}
+
+        def pytest_pycollect_makeitem(collector, name, obj):
+            if name.startswith("test_") and "test_auth.py" in str(collector.nodeid):
+                _seen[collector.nodeid] = _seen.get(collector.nodeid, 0) + 1
+                if _seen[collector.nodeid] > 5:
+                    return []
+            return None
+        """
+    )
+    data = run_plugin(("_ci_makeitem", makeitem))
+
+    # raw and items agree - the deselection check would pass - but test_auth.py
+    # has collapsed, and that is what the per-file map reads.
+    assert data["raw"] == data["items"], data
+    assert data["counts"]["test_auth.py"] == 5, data["counts"]["test_auth.py"]
+    assert data["counts"]["test_auth.py"] != committed_counts()["test_auth.py"]
+
+
+def test_the_plugin_sees_a_hook_thin_the_suite_after_collection() -> None:
+    """Belt-and-braces: a `modifyitems` deselection still shows in raw != items."""
+    thinner = textwrap.dedent(
+        """
+        def pytest_collection_modifyitems(config, items):
+            keep = {}
+            for item in items:
+                keep.setdefault(item.nodeid.split("::", 1)[0], item)
+            items[:] = list(keep.values())
+        """
+    )
+    data = run_plugin(("_ci_thin", thinner))
+
+    assert data["raw"] == expected_tests(), data
+    assert data["items"] == len(committed_counts()), data
+    assert data["raw"] > data["items"], data
+
+
+def test_the_perfile_gate_passes_a_consistent_collection(tmp_path: Path) -> None:
+    result = run_perfile_gate(tmp_path, actual=committed_counts())
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_perfile_gate_fails_when_a_test_file_is_added(tmp_path: Path) -> None:
+    """A new file that collects tests but is not in the map."""
+    actual = {**committed_counts(), "test_new.py": 4}
+    result = run_perfile_gate(tmp_path, actual=actual)
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "test_new.py: on disk, collected 4, not listed in TEST_COUNTS." in output, output
+    assert "test_new.py 4" in output, output
+
+
+def test_the_perfile_gate_fails_when_a_test_file_is_removed(tmp_path: Path) -> None:
+    """A `git rm`: the file is gone from the collection, still in the map."""
+    actual = {k: v for k, v in committed_counts().items() if k != "test_compose_worker.py"}
+    result = run_perfile_gate(
+        tmp_path,
+        actual=actual,
+        on_disk=sorted(actual),  # file not on disk either
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "test_compose_worker.py: collected nothing, TEST_COUNTS says 8" in output, output
+    assert "(drop) test_compose_worker.py" in output, output
+
+
+def test_the_perfile_gate_fails_when_a_test_file_is_renamed(tmp_path: Path) -> None:
+    """The old name collects nothing; the new name is not in the map."""
+    actual = {k: v for k, v in committed_counts().items() if k != "test_media_sweeper.py"}
+    actual["test_renamed.py"] = 27
+    result = run_perfile_gate(tmp_path, actual=actual)
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "test_media_sweeper.py: collected nothing, TEST_COUNTS says 27" in output, output
+    assert "test_renamed.py: on disk, collected 27, not listed in TEST_COUNTS." in output, output
+
+
+def test_the_perfile_gate_fails_when_a_listed_file_collects_nothing(tmp_path: Path) -> None:
+    """The `--ignore` shape, including `--ignore` of the guard file itself.
+
+    The file is on disk and in the map, but pytest collected nothing from it. The
+    count went to zero and that is what fires - there is no total to lower that
+    would paper over one file's collapse.
+    """
+    actual = {k: v for k, v in committed_counts().items() if k != "test_ci_workflow.py"}
+    result = run_perfile_gate(
+        tmp_path,
+        actual=actual,
+        on_disk=sorted(committed_counts()),  # file still on disk
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "test_ci_workflow.py: collected nothing, TEST_COUNTS says" in output, output
+
+
+def test_the_perfile_gate_fails_when_one_file_loses_a_subset(tmp_path: Path) -> None:
+    """Attacks 6 and 7: a subset dropped from one file, the total lowered to match.
+
+    A `pytest_pycollect_makeitem` or `pytest_generate_tests` hook shrinks
+    `test_auth.py` from 41 to 5. Every other file is untouched, every file still
+    contributes >=1, nothing is skipped, and the collection total is a
+    self-consistent 1363. A single number - however measured, before or after any
+    hook - agrees with itself at 1363. The per-file map does not: the auth line
+    reads 5 against a committed 41, and no balancing act anywhere else restores it.
+    """
+    actual = {**committed_counts(), "test_auth.py": 5}
+    result = run_perfile_gate(tmp_path, actual=actual)
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "test_auth.py: collected 5, TEST_COUNTS says 41." in output, output
+    assert "test_auth.py 5" in output, output
+
+
+def test_the_perfile_gate_fails_when_a_hook_thins_the_suite(tmp_path: Path) -> None:
+    """The modifyitems attack: every file thinned to one test, total lowered.
+
+    Per-file, every file whose committed count is above one now reads wrong, so
+    the gate is red on all of them - and the belt-and-braces deselection check
+    fires as well because the plugin's raw outran the kept items.
+    """
+    thinned = dict.fromkeys(committed_counts(), 1)
+    result = run_perfile_gate(tmp_path, actual=thinned, raw=expected_tests())
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    # Read the committed count rather than hard-coding it, so regenerating
+    # TEST_COUNTS at integration does not break this assertion.
+    permissions_count = committed_counts()["test_permissions.py"]
+    assert f"test_permissions.py: collected 1, TEST_COUNTS says {permissions_count}." in output, (
+        output
+    )
+    assert "were deselected after collection" in output, output
+
+
+def test_the_perfile_gate_fails_when_a_file_count_moves_either_direction(tmp_path: Path) -> None:
+    for name, delta in (("test_board.py", -5), ("test_board.py", +5)):
+        actual = {**committed_counts(), name: committed_counts()[name] + delta}
+        result = run_perfile_gate(tmp_path, actual=actual)
+        output = result.stdout + result.stderr
+        assert result.returncode == 1, output
+        got = committed_counts()[name] + delta
+        assert f"{name}: collected {got}, TEST_COUNTS says {committed_counts()[name]}." in output
+        assert f"{name} {got}" in output, output
+
+
+def test_the_perfile_gate_rejects_a_file_pinned_at_zero(tmp_path: Path) -> None:
+    """The `--ignore`-the-guard escape, closed.
+
+    A suppressed file collects nothing, and a committed 0 would match that
+    nothing. So no file may be pinned at 0: to remove the guard file you must
+    edit its line to 0, and that is refused - there is no green value for "this
+    file runs no tests".
+    """
+    committed = {**committed_counts(), "test_ci_workflow.py": 0}
+    actual = {k: v for k, v in committed.items() if k != "test_ci_workflow.py"}
+    result = run_perfile_gate(
+        tmp_path, actual=actual, committed=committed, on_disk=sorted(committed)
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "test_ci_workflow.py is pinned at 0 in TEST_COUNTS" in output, output
+
+
+def test_the_perfile_gate_fails_a_map_that_sums_wrong(tmp_path: Path) -> None:
+    """One source of truth: a map that does not sum to the collection is red.
+
+    The collection is honest here - every file matches - but the committed map
+    given to the gate carries a file the collection does not, so its sum overruns
+    the total. This is the derived-total check the JUnit gate leans on.
+    """
+    inflated = {**committed_counts(), "test_ghost.py": 9}
+    result = run_perfile_gate(
+        tmp_path,
+        actual=committed_counts(),
+        committed=inflated,
+        on_disk=sorted(committed_counts()),
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "sums to" in output and "disagree on the total" in output, output
+
+
+def test_the_perfile_gate_catches_the_balanced_move_the_junit_gates_cannot(tmp_path: Path) -> None:
+    """Criterion 2 across the gates: tests moved between files, total unchanged.
+
+    36 tests move from `test_auth.py` to `test_home.py`. The JUnit report is the
+    right size and nothing is skipped, so the count gate and the skip gate pass.
+    Only the per-file gate sees it - because it is the only guard that pins where
+    the tests live, not merely how many there are.
+    """
+    balanced = junit_report(expected_tests())
+    count_dir = tmp_path / "count"
+    count_dir.mkdir()
+    skip_dir = tmp_path / "skip"
+    skip_dir.mkdir()
+
+    assert run_gate(COUNT_GATE, count_dir, balanced).returncode == 0
+    assert run_gate(SKIP_GATE, skip_dir, balanced).returncode == 0
+
+    moved = {**committed_counts()}
+    moved["test_auth.py"] -= 36
+    moved["test_home.py"] += 36
+    perfile = run_perfile_gate(tmp_path / "perfile", actual=moved)
+    output = perfile.stdout + perfile.stderr
+    assert perfile.returncode == 1, output
+    assert "test_auth.py: collected 5, TEST_COUNTS says 41." in output, output
+    assert "test_home.py: collected 37, TEST_COUNTS says 1." in output, output
 
 
 def test_the_test_count_gate_fails_when_a_test_file_left_the_run(tmp_path: Path) -> None:
     """The exact shape of QA's attack: fewer tests, none of them skipped."""
-    result = run_gate(COUNT_GATE, tmp_path, junit_report(floor() - 19))
+    result = run_gate(COUNT_GATE, tmp_path, junit_report(expected_tests() - 19))
 
     assert result.returncode == 1, result
     output = result.stdout + result.stderr
     assert "::error::" in output, output
-    assert str(floor() - 19) in output and str(floor()) in output, output
+    assert str(expected_tests() - 19) in output and str(expected_tests()) in output, output
 
 
-def test_the_test_count_gate_passes_a_full_run_and_a_grown_one(tmp_path: Path) -> None:
-    at_the_floor = run_gate(COUNT_GATE, tmp_path, junit_report(floor()))
-    assert at_the_floor.returncode == 0, at_the_floor
+def test_the_test_count_gate_fails_a_run_that_grew_as_well(tmp_path: Path) -> None:
+    """The half a floor cannot do, and the half that keeps the number honest.
 
-    grown = run_gate(COUNT_GATE, tmp_path, junit_report(floor() + 40))
-    assert grown.returncode == 0, grown
+    A run with more tests than expected is not a build to wave through: it is a
+    branch that added tests without moving the line, and the next branch to
+    remove tests would have hidden behind the slack.
+    """
+    result = run_gate(COUNT_GATE, tmp_path, junit_report(expected_tests() + 40))
 
-
-def test_the_test_count_gate_says_raising_the_floor_is_one_line(tmp_path: Path) -> None:
-    """The message has to be actionable by someone who has never read this file."""
-    result = run_gate(COUNT_GATE, tmp_path, junit_report(floor() - 1))
+    assert result.returncode == 1, result
     output = result.stdout + result.stderr
+    assert "::error::" in output, output
+    assert str(expected_tests() + 40) in output, output
 
-    assert "MINIMUM_TESTS" in output, output
-    assert ".github/workflows/ci.yml" in output, output
-    assert "one line" in output, output
-    assert "never lowered" in output, output
 
-    # And a run that has outgrown the floor says what the new number would be.
-    grown = run_gate(COUNT_GATE, tmp_path, junit_report(floor() + 40))
-    assert f'MINIMUM_TESTS: "{floor() + 40}"' in grown.stdout, grown.stdout
+def test_the_test_count_gate_passes_exactly_the_expected_run(tmp_path: Path) -> None:
+    result = run_gate(COUNT_GATE, tmp_path, junit_report(expected_tests()))
+
+    assert result.returncode == 0, result
+    assert str(expected_tests()) in result.stdout, result.stdout
+
+
+def test_the_test_count_gate_points_at_the_map_and_the_regenerate_command(tmp_path: Path) -> None:
+    """The message has to be actionable by someone who has never read this file."""
+    for ran in (expected_tests() - 1, expected_tests() + 40):
+        result = run_gate(COUNT_GATE, tmp_path, junit_report(ran))
+        output = result.stdout + result.stderr
+
+        assert ".github/workflows/ci.yml" in output, output
+        # It names the single source of truth and how to regenerate it, and says
+        # the per-file gate will name which file moved.
+        assert "TEST_COUNTS" in output, output
+        assert "AGENTS.md" in output, output
+        assert "same commit" in output, output
+
+    # A run that lost tests says so before it says how to fix the number.
+    lost = run_gate(COUNT_GATE, tmp_path, junit_report(expected_tests() - 1))
+    assert "did not" in lost.stdout, lost.stdout
+
+
+def test_the_junit_gate_derives_its_number_from_the_committed_map(tmp_path: Path) -> None:
+    """No second committed total: the expected count is the sum of TEST_COUNTS."""
+    total = sum(committed_counts().values())
+
+    ok_dir = tmp_path / "ok"
+    ok_dir.mkdir()
+    at_sum = run_gate(COUNT_GATE, ok_dir, junit_report(total))
+    assert at_sum.returncode == 0, at_sum.stdout + at_sum.stderr
+
+    off_dir = tmp_path / "off"
+    off_dir.mkdir()
+    off = run_gate(COUNT_GATE, off_dir, junit_report(total - 1))
+    assert off.returncode == 1, off.stdout + off.stderr
 
 
 def test_the_test_count_gate_fails_when_pytest_wrote_no_report(tmp_path: Path) -> None:
@@ -528,8 +1110,10 @@ def test_the_test_count_gate_fails_when_pytest_wrote_no_report(tmp_path: Path) -
 
 
 def test_the_skip_gate_still_fails_a_skipped_test(tmp_path: Path) -> None:
-    """#30's gate, run rather than read, so #67 cannot quietly have replaced it."""
-    report = junit_report(floor(), skips=(("tests.test_audio::test_probe", "ffmpeg missing"),))
+    """#30's gate, run rather than read, so #67 and #72 cannot have replaced it."""
+    report = junit_report(
+        expected_tests(), skips=(("tests.test_audio::test_probe", "ffmpeg missing"),)
+    )
     result = run_gate(SKIP_GATE, tmp_path, report)
     output = result.stdout + result.stderr
 
@@ -539,7 +1123,7 @@ def test_the_skip_gate_still_fails_a_skipped_test(tmp_path: Path) -> None:
 
 
 def test_the_skip_gate_passes_a_clean_report(tmp_path: Path) -> None:
-    result = run_gate(SKIP_GATE, tmp_path, junit_report(floor()))
+    result = run_gate(SKIP_GATE, tmp_path, junit_report(expected_tests()))
 
     assert result.returncode == 0, result
     assert "No test skipped." in result.stdout, result.stdout
@@ -549,7 +1133,7 @@ def test_the_two_gates_catch_different_things(tmp_path: Path) -> None:
     """Neither gate covers the other, which is why both are here."""
     lost = tmp_path / "lost"
     lost.mkdir()
-    missing_tests = junit_report(floor() - 19)
+    missing_tests = junit_report(expected_tests() - 19)
 
     # Tests gone from collection: nothing is skipped, so only the count sees it.
     assert run_gate(SKIP_GATE, lost, missing_tests).returncode == 0
@@ -557,7 +1141,9 @@ def test_the_two_gates_catch_different_things(tmp_path: Path) -> None:
 
     hidden = tmp_path / "hidden"
     hidden.mkdir()
-    skipped = junit_report(floor(), skips=(("tests.test_audio::test_probe", "ffmpeg missing"),))
+    skipped = junit_report(
+        expected_tests(), skips=(("tests.test_audio::test_probe", "ffmpeg missing"),)
+    )
 
     # The full suite ran and 1 test opted out: only the skip gate sees that.
     assert run_gate(COUNT_GATE, hidden, skipped).returncode == 0
@@ -618,14 +1204,25 @@ def test_agents_md_says_what_ci_runs_and_how_to_reproduce_it() -> None:
         assert command in reproduce, reproduce
 
 
-def test_agents_md_says_the_number_of_tests_has_a_floor_and_how_to_raise_it() -> None:
+def test_agents_md_documents_the_per_file_map_and_how_to_regenerate_it() -> None:
     agents = (BASE_DIR / "AGENTS.md").read_text()
     section = agents.split("\nCI\n", 1)[1]
 
-    assert "MINIMUM_TESTS" in section
-    assert "collection" in section
+    assert "TEST_COUNTS" in section
+    assert "MINIMUM_TESTS" not in section
+    assert "EXPECTED_TESTS" not in section
+    assert "per-file" in section or "per file" in section
     # Named the same way in the docs as in the file someone will go and edit.
     assert ".github/workflows/ci.yml" in section
+    # The two things a person merging a branch has to know: the map is pinned per
+    # file, and moving it is their job in their own commit.
+    assert "same commit" in section
+
+    # And the one-command regenerator is present, so an integrator pastes a fresh
+    # block rather than hand-counting.
+    assert "collections" in section
+    assert "pytest_collection_finish" in section
+    assert "--collect-only" in section
 
 
 def test_this_file_needs_no_yaml_parser_and_no_new_dependency() -> None:
