@@ -1,0 +1,35 @@
+{% extends "base_app.html" %}
+{% comment %}
+  Re-wording one extracted draft decision before accepting it. Only this cycle's
+  facilitator reaches this page — the view asks `can_confirm_extraction` and
+  answers everyone else the way an unused id is answered. Saving both writes the
+  edits and confirms the draft, so an edited-then-accepted decision is
+  indistinguishable from a plainly accepted one afterwards; `source` stays
+  EXTRACTED, which is where it came from and is not rewritten by approving it.
+
+  The form posts to `request.path` rather than a `{% url %}` carrying the draft's
+  pk, so the URL sweep has no per-object argument to reverse outside a loop.
+{% endcomment %}
+
+{% block title %}Edit a draft decision — week of {{ cycle.week_start|date:'j F Y' }}{% endblock %}
+
+{% block content %}
+  <h1 class="page-heading">Edit a draft decision</h1>
+  <p class="mt-2 text-sm text-slate-600">
+    <a href="{% url 'retro-review' retro.pk %}" class="link">Review the extracted drafts</a>
+    for the week of {{ cycle.week_start|date:'j F Y' }}
+  </p>
+
+  <section class="panel mt-8">
+    <h2 class="section-heading">The decision</h2>
+    <form method="post" action="{{ request.path }}" class="form-fields">
+      {% csrf_token %}
+      {{ form.as_div }}
+      <button type="submit" class="btn-primary">Save and confirm</button>
+    </form>
+  </section>
+
+  <p class="mt-6 text-sm">
+    <a href="{% url 'retro-review' retro.pk %}" class="link">Back to the review</a>
+  </p>
+{% endblock %}

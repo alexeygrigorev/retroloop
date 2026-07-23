@@ -1,0 +1,50 @@
+{% extends "base_app.html" %}
+{% comment %}
+  Advancing to Complete with drafts still outstanding. The facilitator is told
+  how many extracted drafts nobody reviewed will be discarded, and confirms before
+  the transition runs — so a draft is never thrown away silently, and a draft
+  nobody reviewed does not survive into the record by accident either. Confirming
+  posts back to the advance endpoint with `confirm_discard`, and the discard and
+  the stage write commit together inside the same transaction.
+
+  The version this page was rendered from is carried through, so a stale confirm
+  is rejected rather than advancing the board twice.
+{% endcomment %}
+
+{% block title %}Advance to Complete — week of {{ cycle.week_start|date:'j F Y' }}{% endblock %}
+
+{% block content %}
+  <h1 class="page-heading">Advance to Complete?</h1>
+  <p class="mt-2 text-sm text-slate-600">
+    <a href="{{ project.get_absolute_url }}" class="link">{{ project.name }}</a>
+    —
+    <a href="{{ retro.get_absolute_url }}" class="link">the retrospective</a>
+    for the week of {{ cycle.week_start|date:'j F Y' }}
+  </p>
+
+  <section class="panel mt-8" data-discard-warning>
+    <h2 class="section-heading">Unreviewed drafts will be discarded</h2>
+    <p class="mt-2 text-sm text-slate-600">
+      This retrospective still has
+      <span class="font-medium" data-draft-count="{{ draft_count }}">{{ draft_count }}</span>
+      extracted draft(s) nobody has accepted or rejected. Completing the
+      retrospective discards them — there is no archive — and they do not reach the
+      team's record.
+    </p>
+    <p class="mt-2 text-sm text-slate-600">
+      <a href="{% url 'retro-review' retro.pk %}" class="link">Review them first</a>
+      if you want to keep any.
+    </p>
+
+    <form method="post" action="{% url 'retro-advance' retro.pk %}" class="mt-4">
+      {% csrf_token %}
+      <input type="hidden" name="version" value="{{ retro.version }}">
+      <input type="hidden" name="confirm_discard" value="1">
+      <button type="submit" class="btn-primary">Discard the drafts and complete</button>
+    </form>
+
+    <p class="mt-4 text-sm">
+      <a href="{{ retro.get_absolute_url }}" class="link">Cancel and go back</a>
+    </p>
+  </section>
+{% endblock %}

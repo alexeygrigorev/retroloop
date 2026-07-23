@@ -22,7 +22,13 @@ from django.utils import timezone
 from cycles.models import FeedbackCycle
 from cycles.reveal import reveal_cycle
 from projects.permissions import can_advance_stage, can_start_retrospective
-from retro.models import Retrospective, is_legal_transition, next_stage_after
+from retro.models import (
+    ActionItem,
+    Decision,
+    Retrospective,
+    is_legal_transition,
+    next_stage_after,
+)
 
 # --------------------------------------------------------------------------
 # Rejections
@@ -145,7 +151,31 @@ def _on_discuss(retro: Retrospective) -> None:
 
 
 def _on_complete(retro: Retrospective) -> None:
-    """Entering COMPLETE. A no-op until #25 locks the board."""
+    """Entering COMPLETE. Discards any extracted draft nobody reviewed (#24).
+
+    Confirmation and CONFIRMED rows survive the transition — approving a draft is
+    what carries it into the record, and #17 freezes it from here. What does not
+    survive is a draft still in review: a decision or action item #23 extracted
+    that no facilitator accepted or rejected. It is discarded so it cannot slip
+    into the record by accident, the same rows a re-run of extraction clears —
+    `source=EXTRACTED` and still in `DRAFT`, never a hand-written or an already
+    confirmed one.
+
+    This runs inside `advance_stage()`'s transaction, so the discard and the stage
+    write commit together: whatever path reaches COMPLETE, no draft is left behind
+    it. The facilitator's advance view names how many will go and asks first; this
+    is the enforcement that holds however the transition is reached.
+    """
+    Decision.objects.filter(
+        retrospective=retro,
+        source=Decision.Source.EXTRACTED,
+        status=Decision.Status.DRAFT,
+    ).delete()
+    ActionItem.objects.filter(
+        retrospective=retro,
+        source=ActionItem.Source.EXTRACTED,
+        review_status=ActionItem.ReviewStatus.DRAFT,
+    ).delete()
 
 
 #: Keyed by the stage being entered. Every stage after DRAFT has an entry, so a

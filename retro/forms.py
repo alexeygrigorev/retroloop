@@ -117,3 +117,33 @@ class ActionItemForm(forms.ModelForm):
         if owner is not None and not self.project.memberships.filter(user=owner).exists():
             raise forms.ValidationError("The owner has to be a member of this project.")
         return owner
+
+
+class ReviewOwnerForm(forms.Form):
+    """The owner a facilitator picks on the review screen when a draft has none (#24).
+
+    A draft action item #23 could not resolve — an unmatched or ambiguous name —
+    lands with `owner` NULL, and the facilitator resolves it here by choosing from
+    the project's roster. This is the accept-with-owner step: a value off the
+    roster is a validation error, not a stored row, exactly the rule
+    `ActionItemForm.clean_owner` enforces on the hand-written form. Empty is
+    allowed — an item is accepted unassigned rather than blocked, because an
+    unowned action is better than a wrongly-owned one.
+    """
+
+    owner = forms.ModelChoiceField(
+        queryset=User.objects.none(),
+        required=False,
+        empty_label="Leave unassigned",
+    )
+
+    def __init__(self, *args, project: Project, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.project = project
+        # Only project members are offered, so the dropdown neither lists the
+        # whole user table nor lets someone outside the project be assigned. A
+        # value that went round the dropdown is refused by the queryset itself,
+        # which is a validation error rather than a stored row.
+        self.fields["owner"].queryset = User.objects.filter(memberships__project=project).order_by(
+            "username"
+        )

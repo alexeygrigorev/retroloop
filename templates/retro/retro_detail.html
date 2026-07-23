@@ -156,6 +156,17 @@
     <a href="{% url 'retro-outcomes' retro.pk %}" class="link">Decisions and action items</a>
   </p>
 
+  {% if can_review %}
+    <p class="mt-6 text-sm">
+      {% comment %}
+        This cycle's facilitator reviews the drafts extraction produced (#24)
+        before any of them reaches the record. The link is shown to the
+        facilitator alone; the screen refuses everyone else with a 404.
+      {% endcomment %}
+      <a href="{% url 'retro-review' retro.pk %}" class="link">Review the extracted drafts</a>
+    </p>
+  {% endif %}
+
   <p class="mt-6 text-sm">
     <a href="{{ cycle.get_absolute_url }}" class="link">Back to the week</a>
   </p>

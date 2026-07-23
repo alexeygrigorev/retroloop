@@ -7,9 +7,10 @@ turn its rejection into a response. No view assigns `stage`.
 """
 
 from django.contrib import messages
+from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
-from django.http import HttpRequest, HttpResponse
+from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -19,6 +20,7 @@ from cycles.models import Card, FeedbackCycle
 from meetings.services import upload_is_open
 from projects.permissions import (
     can_advance_stage,
+    can_confirm_extraction,
     can_delete_action_item,
     can_delete_decision,
     can_edit_action_item,
@@ -27,13 +29,15 @@ from projects.permissions import (
     can_upload_recording,
 )
 from projects.views import member_or_404
-from retro.forms import ActionItemForm, DecisionForm
+from retro.forms import ActionItemForm, DecisionForm, ReviewOwnerForm
 from retro.models import ActionItem, Decision, Retrospective
 from retro.services import (
     StageError,
     advance_stage,
     start_retrospective,
 )
+
+User = get_user_model()
 
 
 @login_required
@@ -83,6 +87,10 @@ def retro_detail(request: HttpRequest, pk: int) -> HttpResponse:
             # points at; this only decides whether to show the link.
             "can_hand_over_meeting": can_upload_recording(request.user, retro)
             and upload_is_open(retro),
+            # The review screen is this cycle's facilitator's alone (#24). The
+            # link is a courtesy; the screen refuses anyone who reaches it without
+            # being shown it.
+            "can_review": can_confirm_extraction(request.user, retro),
             "next_stage_label": _stage_label(retro.next_stage),
             # What the React island is handed, rendered into the page with
             # `json_script`. See board_bootstrap() for why it is this and no more.
@@ -104,6 +112,29 @@ def retro_advance(request: HttpRequest, pk: int) -> HttpResponse:
     posted = request.POST.get("version", "")
     if posted.isdigit():
         retro.version = int(posted)
+
+    # Advancing to COMPLETE discards any draft nobody reviewed (the `_on_complete`
+    # hook does the deleting, inside the transaction). Before that happens the
+    # facilitator is told how many will go and asked to confirm, so a draft is
+    # never thrown away silently. Only someone who could advance is shown the
+    # count; a plain member falls through to advance_stage(), which refuses them.
+    if (
+        retro.next_stage == Retrospective.Stage.COMPLETE
+        and can_advance_stage(request.user, retro)
+        and not request.POST.get("confirm_discard")
+    ):
+        draft_count = _outstanding_draft_count(retro)
+        if draft_count:
+            return render(
+                request,
+                "retro/confirm_complete.html",
+                {
+                    "retro": retro,
+                    "cycle": retro.cycle,
+                    "project": retro.cycle.project,
+                    "draft_count": draft_count,
+                },
+            )
 
     try:
         advance_stage(request.user, retro)
@@ -405,7 +436,14 @@ def _decorated_action_items(request: HttpRequest, retro: Retrospective) -> list[
     template renders a control, and whether this viewer may use it is decided in
     `projects/permissions.py`.
     """
-    items = list(retro.action_items.select_related("owner"))
+    # CONFIRMED only: a draft #23 extracted and nobody has reviewed appears on the
+    # review screen alone (#24), never here on the record every member reads. A
+    # hand-written item and an accepted draft are both CONFIRMED and both shown.
+    items = list(
+        retro.action_items.filter(review_status=ActionItem.ReviewStatus.CONFIRMED).select_related(
+            "owner"
+        )
+    )
     for item in items:
         item.can_edit = can_edit_action_item(request.user, item)
         item.can_update = can_update_action_item(request.user, item)
@@ -413,7 +451,9 @@ def _decorated_action_items(request: HttpRequest, retro: Retrospective) -> list[
 
 
 def _decorated_decisions(request: HttpRequest, retro: Retrospective) -> list[Decision]:
-    decisions = list(retro.decisions.all())
+    # CONFIRMED only, for the same reason as the action items above: an unreviewed
+    # draft is invisible everywhere but the review screen.
+    decisions = list(retro.decisions.filter(status=Decision.Status.CONFIRMED))
     for decision in decisions:
         decision.can_edit = can_edit_decision(request.user, decision)
     return decisions
@@ -461,6 +501,305 @@ def _render_action_item_edit(
     return render(
         request,
         "retro/action_item_edit.html",
+        {"retro": retro, "cycle": retro.cycle, "project": retro.cycle.project, "form": form},
+        status=status,
+    )
+
+
+# --------------------------------------------------------------------------
+# Draft review and confirmation — #24
+#
+# The facilitator reviews the drafts #23 extracted before any of them reaches the
+# team's record: each is accepted (promoted to CONFIRMED), edited then accepted,
+# or rejected (deleted). A draft action item #23 could not assign shows an owner
+# dropdown of project members, picked here.
+#
+# Only this cycle's facilitator may open the screen or act on it — the whole of
+# that rule is `can_confirm_extraction` from `projects/permissions.py` (#6), and
+# this issue adds no access rule of its own. A member, a non-member and an
+# anonymous user all get 404, the "not told it exists" answer the rest of the
+# project uses: `_review_retro_or_404` asks the predicate and raises Http404 on
+# False, and the predicate is False for an anonymous or deactivated user, so the
+# screen never has to special-case one.
+#
+# Promotion changes `review_status`/`status` only and never rewrites `source`: an
+# accepted draft stays `EXTRACTED`, so where it came from is still on the record.
+# A row that was rejected or already accepted by someone else is answered with a
+# readable message and a redirect, never a 500 — the lookup is scoped to the
+# retrospective and to a still-`DRAFT` row, and a miss is a message rather than a
+# 404 the reviewer cannot read.
+#
+# This screen never touches a card: a draft points at a cluster (an integer id)
+# or nothing, names an owner or nobody, and carries an excerpt of the transcript.
+# No card author, no `Card.pk`, no anonymity flag is reachable here —
+# `_docs/decisions.md` items 9 and 10 are about `Card`, and none of these is one.
+# --------------------------------------------------------------------------
+
+
+def _review_retro_or_404(request: HttpRequest, pk: int) -> Retrospective:
+    """The retrospective, if this user may confirm its extraction; otherwise 404.
+
+    No `login_required`: the answer to a member, a non-member and an anonymous
+    user is the same 404, because `can_confirm_extraction` is False for every one
+    of them and the screen is not told apart from an id that was never used. Only
+    this cycle's facilitator gets past here.
+    """
+    retro = get_object_or_404(
+        Retrospective.objects.select_related("cycle__project", "cycle__facilitator"), pk=pk
+    )
+    if not can_confirm_extraction(request.user, retro):
+        raise Http404("No such retrospective to review.")
+    return retro
+
+
+def _draft_decisions(retro: Retrospective) -> list[Decision]:
+    return list(
+        retro.decisions.filter(
+            source=Decision.Source.EXTRACTED, status=Decision.Status.DRAFT
+        ).select_related("cluster")
+    )
+
+
+def _draft_action_items(retro: Retrospective) -> list[ActionItem]:
+    return list(
+        retro.action_items.filter(
+            source=ActionItem.Source.EXTRACTED, review_status=ActionItem.ReviewStatus.DRAFT
+        ).select_related("cluster", "owner")
+    )
+
+
+def _outstanding_draft_count(retro: Retrospective) -> int:
+    """How many extracted drafts are still in review — decisions and action items."""
+    return (
+        retro.decisions.filter(
+            source=Decision.Source.EXTRACTED, status=Decision.Status.DRAFT
+        ).count()
+        + retro.action_items.filter(
+            source=ActionItem.Source.EXTRACTED, review_status=ActionItem.ReviewStatus.DRAFT
+        ).count()
+    )
+
+
+def retro_review(request: HttpRequest, pk: int) -> HttpResponse:
+    """The draft decisions and action items of one retrospective, for the facilitator."""
+    retro = _review_retro_or_404(request, pk)
+    return _render_review(request, retro)
+
+
+@require_POST
+def review_accept_all(request: HttpRequest, pk: int) -> HttpResponse:
+    """Confirm every outstanding draft at once, unassigned items included.
+
+    An item still missing an owner is accepted unassigned rather than blocked —
+    an unowned action is better than a wrongly-owned one — so this promotes and
+    resolves no owners. `source` is untouched; only the review state moves.
+    """
+    retro = _review_retro_or_404(request, pk)
+    decisions = retro.decisions.filter(
+        source=Decision.Source.EXTRACTED, status=Decision.Status.DRAFT
+    ).update(status=Decision.Status.CONFIRMED)
+    actions = retro.action_items.filter(
+        source=ActionItem.Source.EXTRACTED, review_status=ActionItem.ReviewStatus.DRAFT
+    ).update(review_status=ActionItem.ReviewStatus.CONFIRMED)
+    if decisions or actions:
+        messages.success(
+            request,
+            f"Confirmed {decisions} decision(s) and {actions} action item(s). "
+            "Any still without an owner were kept unassigned.",
+        )
+    else:
+        messages.info(request, "There were no drafts left to confirm.")
+    return redirect("retro-review", pk=retro.pk)
+
+
+@require_POST
+def review_decision_accept(request: HttpRequest, pk: int, decision_pk: int) -> HttpResponse:
+    """Promote one draft decision to CONFIRMED. Its `source` stays EXTRACTED."""
+    retro = _review_retro_or_404(request, pk)
+    decision = _draft_decision_or_message(request, retro, decision_pk)
+    if decision is None:
+        return redirect("retro-review", pk=retro.pk)
+
+    decision.status = Decision.Status.CONFIRMED
+    decision.save(update_fields=["status"])
+    messages.success(request, "The decision has been confirmed.")
+    return redirect("retro-review", pk=retro.pk)
+
+
+@require_POST
+def review_decision_reject(request: HttpRequest, pk: int, decision_pk: int) -> HttpResponse:
+    """Discard one draft decision. There is no rejected-drafts archive."""
+    retro = _review_retro_or_404(request, pk)
+    decision = _draft_decision_or_message(request, retro, decision_pk)
+    if decision is None:
+        return redirect("retro-review", pk=retro.pk)
+
+    decision.delete()
+    messages.success(request, "The draft decision has been discarded.")
+    return redirect("retro-review", pk=retro.pk)
+
+
+def review_decision_edit(request: HttpRequest, pk: int, decision_pk: int) -> HttpResponse:
+    """Re-word one draft decision, then accept it. Edited-then-accepted is CONFIRMED.
+
+    An edited draft is indistinguishable from a plainly accepted one afterwards:
+    the save both writes the new text and promotes the row, so `source` stays
+    EXTRACTED and `status` becomes CONFIRMED, exactly as a bare accept leaves it.
+    """
+    retro = _review_retro_or_404(request, pk)
+    decision = _draft_decision_or_message(request, retro, decision_pk)
+    if decision is None:
+        return redirect("retro-review", pk=retro.pk)
+
+    if request.method != "POST":
+        form = DecisionForm(instance=decision, retrospective=retro)
+        return _render_review_decision_edit(request, decision, form)
+
+    form = DecisionForm(request.POST, instance=decision, retrospective=retro)
+    if not form.is_valid():
+        return _render_review_decision_edit(request, decision, form, status=400)
+
+    edited = form.save(commit=False)
+    edited.status = Decision.Status.CONFIRMED
+    edited.save()
+    messages.success(request, "The decision has been edited and confirmed.")
+    return redirect("retro-review", pk=retro.pk)
+
+
+@require_POST
+def review_action_item_accept(request: HttpRequest, pk: int, item_pk: int) -> HttpResponse:
+    """Promote one draft action item, picking an owner if the dropdown carried one.
+
+    The owner posted from the dropdown must be a project member; anything else is a
+    validation error, not a stored row (`ReviewOwnerForm`). An empty choice accepts
+    the item unassigned — displayed, never blocked. `source` is untouched; only the
+    owner and the review state move.
+    """
+    retro = _review_retro_or_404(request, pk)
+    action = _draft_action_item_or_message(request, retro, item_pk)
+    if action is None:
+        return redirect("retro-review", pk=retro.pk)
+
+    form = ReviewOwnerForm(request.POST, project=retro.cycle.project)
+    if not form.is_valid():
+        messages.error(request, "The owner has to be a member of this project.")
+        return redirect("retro-review", pk=retro.pk)
+
+    owner = form.cleaned_data["owner"]
+    if owner is not None:
+        action.owner = owner
+    action.review_status = ActionItem.ReviewStatus.CONFIRMED
+    action.save(update_fields=["owner", "review_status"])
+    messages.success(request, "The action item has been confirmed.")
+    return redirect("retro-review", pk=retro.pk)
+
+
+@require_POST
+def review_action_item_reject(request: HttpRequest, pk: int, item_pk: int) -> HttpResponse:
+    """Discard one draft action item. No archive."""
+    retro = _review_retro_or_404(request, pk)
+    action = _draft_action_item_or_message(request, retro, item_pk)
+    if action is None:
+        return redirect("retro-review", pk=retro.pk)
+
+    action.delete()
+    messages.success(request, "The draft action item has been discarded.")
+    return redirect("retro-review", pk=retro.pk)
+
+
+def review_action_item_edit(request: HttpRequest, pk: int, item_pk: int) -> HttpResponse:
+    """Re-word one draft action item — text, owner, due date — then accept it.
+
+    The owner is validated against the roster by the form, so an owner off the
+    project is a validation error here too. The save both writes the edits and
+    promotes the row to CONFIRMED, leaving `source` EXTRACTED, so an
+    edited-then-accepted item behaves like any other accepted one.
+    """
+    retro = _review_retro_or_404(request, pk)
+    action = _draft_action_item_or_message(request, retro, item_pk)
+    if action is None:
+        return redirect("retro-review", pk=retro.pk)
+
+    project = retro.cycle.project
+    if request.method != "POST":
+        form = ActionItemForm(instance=action, retrospective=retro, project=project)
+        return _render_review_action_item_edit(request, action, form)
+
+    form = ActionItemForm(request.POST, instance=action, retrospective=retro, project=project)
+    if not form.is_valid():
+        return _render_review_action_item_edit(request, action, form, status=400)
+
+    edited = form.save(commit=False)
+    edited.review_status = ActionItem.ReviewStatus.CONFIRMED
+    edited.save()
+    messages.success(request, "The action item has been edited and confirmed.")
+    return redirect("retro-review", pk=retro.pk)
+
+
+def _draft_decision_or_message(
+    request: HttpRequest, retro: Retrospective, decision_pk: int
+) -> Decision | None:
+    """The still-draft extracted decision, or None with a readable message set.
+
+    A row someone else just rejected, or already accepted, is gone from the set of
+    drafts: this returns None and leaves a message rather than a 404 or a 500, so
+    acting on a stale screen reads as "already handled" instead of an error.
+    """
+    decision = retro.decisions.filter(
+        pk=decision_pk, source=Decision.Source.EXTRACTED, status=Decision.Status.DRAFT
+    ).first()
+    if decision is None:
+        messages.info(request, "That draft has already been reviewed or removed.")
+    return decision
+
+
+def _draft_action_item_or_message(
+    request: HttpRequest, retro: Retrospective, item_pk: int
+) -> ActionItem | None:
+    action = retro.action_items.filter(
+        pk=item_pk, source=ActionItem.Source.EXTRACTED, review_status=ActionItem.ReviewStatus.DRAFT
+    ).first()
+    if action is None:
+        messages.info(request, "That draft has already been reviewed or removed.")
+    return action
+
+
+def _render_review(request: HttpRequest, retro: Retrospective) -> HttpResponse:
+    """The review screen: the drafts, their excerpts, and the roster for the dropdowns."""
+    project = retro.cycle.project
+    context = {
+        "retro": retro,
+        "cycle": retro.cycle,
+        "project": project,
+        "draft_decisions": _draft_decisions(retro),
+        "draft_action_items": _draft_action_items(retro),
+        # The roster the owner dropdowns are built from — project members only,
+        # so a draft can never be assigned to someone outside the project.
+        "members": User.objects.filter(memberships__project=project).order_by("username"),
+        "summary": retro.extraction_summary,
+    }
+    return render(request, "retro/review.html", context)
+
+
+def _render_review_decision_edit(
+    request: HttpRequest, decision: Decision, form: DecisionForm, status: int = 200
+) -> HttpResponse:
+    retro = decision.retrospective
+    return render(
+        request,
+        "retro/review_decision_edit.html",
+        {"retro": retro, "cycle": retro.cycle, "project": retro.cycle.project, "form": form},
+        status=status,
+    )
+
+
+def _render_review_action_item_edit(
+    request: HttpRequest, action: ActionItem, form: ActionItemForm, status: int = 200
+) -> HttpResponse:
+    retro = action.retrospective
+    return render(
+        request,
+        "retro/review_action_item_edit.html",
         {"retro": retro, "cycle": retro.cycle, "project": retro.cycle.project, "form": form},
         status=status,
     )

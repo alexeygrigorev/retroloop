@@ -1,0 +1,163 @@
+{% extends "base_app.html" %}
+{% comment %}
+  The facilitator's review of what #23 extracted: every EXTRACTED decision and
+  action item still in DRAFT, for one retrospective, on one page. Each carries the
+  supporting excerpt from the transcript, so a draft is judged against what was
+  actually said rather than in isolation, and each offers accept, edit and reject.
+
+  Only this cycle's facilitator reaches this page — the view asks
+  `can_confirm_extraction` and answers everyone else with the 404 an unused id
+  earns. Nothing here is a card: a draft points at a cluster (an integer id the
+  whole team made) or nothing and names an owner or nobody, so there is no card
+  author, no card pk and no anonymity flag to leak (decisions items 9 and 10).
+
+  Server-rendered, one row per action: each accept, edit and reject posts and
+  redirects back here, so a change to one draft leaves the others where they are.
+{% endcomment %}
+
+{% block title %}Review the extracted drafts — week of {{ cycle.week_start|date:'j F Y' }}{% endblock %}
+
+{% block content %}
+  <h1 class="page-heading">Review the extracted drafts</h1>
+  <p class="mt-2 text-sm text-slate-600">
+    <a href="{{ project.get_absolute_url }}" class="link">{{ project.name }}</a>
+    —
+    <a href="{{ retro.get_absolute_url }}" class="link">the retrospective</a>
+    for the week of {{ cycle.week_start|date:'j F Y' }}
+  </p>
+  <p class="mt-2 text-sm text-slate-600">
+    Nothing here reaches the team's record until you accept it. Rejecting discards
+    a draft; there is no archive.
+  </p>
+
+  {% if summary %}
+    <section class="panel mt-8" data-extraction-summary>
+      <h2 class="section-heading">Meeting summary</h2>
+      <p class="mt-2 text-sm text-slate-600">{{ summary }}</p>
+    </section>
+  {% endif %}
+
+  {% if draft_decisions or draft_action_items %}
+    <form method="post" action="{% url 'review-accept-all' retro.pk %}" class="mt-8">
+      {% csrf_token %}
+      <button type="submit" class="btn-primary">Accept everything</button>
+      <span class="ml-2 text-xs text-slate-500">
+        Items still without an owner are accepted unassigned, not blocked.
+      </span>
+    </form>
+  {% endif %}
+
+  <section class="panel mt-8">
+    <h2 class="section-heading">Draft decisions</h2>
+    {% if draft_decisions %}
+      <ul class="list-rows">
+        {% for decision in draft_decisions %}
+          <li data-draft-decision="{{ decision.pk }}" data-source="{{ decision.source }}">
+            <p>{{ decision.text }}</p>
+            {% if decision.cluster %}
+              <p class="text-xs text-slate-500">About: {{ decision.cluster.name }}</p>
+            {% endif %}
+            {% if decision.excerpt %}
+              <blockquote class="mt-1 border-l-2 border-slate-300 pl-2 text-xs text-slate-500"
+                          data-excerpt>
+                “{{ decision.excerpt }}”
+              </blockquote>
+            {% endif %}
+            <div class="mt-1 flex gap-2">
+              <form method="post" action="{% url 'review-decision-accept' retro.pk decision.pk %}">
+                {% csrf_token %}
+                <button type="submit" class="btn-secondary">Accept</button>
+              </form>
+              <a href="{% url 'review-decision-edit' retro.pk decision.pk %}" class="link">Edit</a>
+              <form method="post" action="{% url 'review-decision-reject' retro.pk decision.pk %}">
+                {% csrf_token %}
+                <button type="submit" class="btn-secondary">Reject</button>
+              </form>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="mt-2 text-sm text-slate-600" data-empty="draft-decisions">
+        No decisions were extracted for review.
+      </p>
+    {% endif %}
+  </section>
+
+  <section class="panel mt-8">
+    <h2 class="section-heading">Draft action items</h2>
+    {% if draft_action_items %}
+      <ul class="list-rows">
+        {% for item in draft_action_items %}
+          <li
+            data-draft-action-item="{{ item.pk }}"
+            data-source="{{ item.source }}"
+            {% if item.is_unassigned %}data-unassigned="true"{% endif %}
+          >
+            <p>{{ item.description }}</p>
+            <p class="text-xs text-slate-500">
+              {% if item.is_unassigned %}
+                <span class="font-medium text-amber-700">Unassigned — pick an owner below</span>
+              {% else %}
+                Owner: {{ item.owner.display_name }}
+              {% endif %}
+              —
+              {% if item.due_date %}
+                Due {{ item.due_date|date:'j F Y' }}
+              {% else %}
+                No due date
+              {% endif %}
+            </p>
+            {% if item.cluster %}
+              <p class="text-xs text-slate-500">About: {{ item.cluster.name }}</p>
+            {% endif %}
+            {% if item.excerpt %}
+              <blockquote class="mt-1 border-l-2 border-slate-300 pl-2 text-xs text-slate-500"
+                          data-excerpt>
+                “{{ item.excerpt }}”
+              </blockquote>
+            {% endif %}
+            <form method="post" action="{% url 'review-action-item-accept' retro.pk item.pk %}"
+                  class="mt-1 flex flex-wrap items-center gap-2">
+              {% csrf_token %}
+              {% if item.is_unassigned %}
+                <label class="text-xs text-slate-600">
+                  Owner
+                  <select name="owner" data-owner-picker>
+                    <option value="">Leave unassigned</option>
+                    {% for member in members %}
+                      <option value="{{ member.pk }}">{{ member.display_name }}</option>
+                    {% endfor %}
+                  </select>
+                </label>
+              {% endif %}
+              <button type="submit" class="btn-secondary">Accept</button>
+            </form>
+            <div class="mt-1 flex gap-2">
+              <a href="{% url 'review-action-item-edit' retro.pk item.pk %}" class="link">Edit</a>
+              <form method="post" action="{% url 'review-action-item-reject' retro.pk item.pk %}">
+                {% csrf_token %}
+                <button type="submit" class="btn-secondary">Reject</button>
+              </form>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="mt-2 text-sm text-slate-600" data-empty="draft-action-items">
+        No action items were extracted for review.
+      </p>
+    {% endif %}
+  </section>
+
+  {% if not draft_decisions and not draft_action_items %}
+    <p class="mt-8 text-sm text-slate-600" data-empty="review">
+      There is nothing to review. Nothing was extracted for this retrospective, or
+      every draft has already been accepted or rejected.
+    </p>
+  {% endif %}
+
+  <p class="mt-6 text-sm">
+    <a href="{{ retro.get_absolute_url }}" class="link">Back to the retrospective</a>
+  </p>
+{% endblock %}

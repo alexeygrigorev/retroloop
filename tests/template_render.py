@@ -189,6 +189,30 @@ def scene(name: str) -> tuple[dict, HttpRequest]:
     action_item.can_edit = permitted
     action_item.can_update = permitted
 
+    # #24's review screen. An extracted draft of each kind, still in review, so the
+    # accept/edit/reject controls and the owner dropdown both render; the draft
+    # action item is unassigned so the "pick an owner" branch is swept too. These
+    # rows are EXTRACTED/DRAFT, so they never appear on #17's outcomes lists above,
+    # which the view filters to CONFIRMED.
+    draft_decision = Decision.objects.create(
+        retrospective=retro,
+        cluster=cluster,
+        text="Ship smaller pull requests.",
+        excerpt="We kept blocking on huge PRs, let's ship smaller ones.",
+        source=Decision.Source.EXTRACTED,
+        status=Decision.Status.DRAFT,
+    )
+    draft_action_item = ActionItem.objects.create(
+        retrospective=retro,
+        cluster=cluster,
+        description="Split the deploy PR before Thursday.",
+        excerpt="Someone should split that deploy PR before Thursday.",
+        owner=None,
+        source=ActionItem.Source.EXTRACTED,
+        review_status=ActionItem.ReviewStatus.DRAFT,
+        status=ActionItem.Status.OPEN,
+    )
+
     # The sections are the view's own, so what is swept is what a browser gets:
     # `card_section()` fills in the form, the remaining characters and `can_add`
     # from the cycle it is given. The refused scene asks for the category the
@@ -225,6 +249,17 @@ def scene(name: str) -> tuple[dict, HttpRequest]:
         "cycles": [cycle] if permitted else [],
         "decisions": [decision],
         "action_items": [action_item],
+        # #24's review screen: the drafts, the roster its owner dropdowns are built
+        # from, the extracted summary it shows, and the count the discard-on-
+        # complete confirmation names. Present in both scenes, like every other
+        # object here, so both the populated and the empty branch are swept.
+        "draft_decisions": [draft_decision],
+        "draft_action_items": [draft_action_item],
+        "members": get_user_model()
+        .objects.filter(memberships__project=project)
+        .order_by("username"),
+        "summary": "The team agreed to ship smaller pull requests.",
+        "draft_count": 2,
         "memberships": project.memberships.all() if permitted else [],
         "cards": [card] if permitted else [],
         "sections": sections if permitted else [],
@@ -238,6 +273,7 @@ def scene(name: str) -> tuple[dict, HttpRequest]:
         "can_rotate": permitted,
         "can_start_retro": permitted,
         "can_advance": permitted,
+        "can_review": permitted,
         "can_hand_over_meeting": permitted,
         "upload_is_open": permitted,
         "can_upload": permitted,

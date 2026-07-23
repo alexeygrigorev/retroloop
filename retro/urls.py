@@ -36,4 +36,45 @@ urlpatterns = [
     path("action-items/<int:pk>/edit/", views.action_item_edit, name="action-item-edit"),
     path("action-items/<int:pk>/delete/", views.action_item_delete, name="action-item-delete"),
     path("action-items/<int:pk>/status/", views.action_item_toggle, name="action-item-toggle"),
+    # Draft review and confirmation (#24). The screen and its per-row actions hang
+    # off the retrospective, so the facilitator check and the row lookup both key
+    # off it: a row that was just rejected by someone else is gone from the retro
+    # rather than a 404 the reviewer cannot read. Each draft is then addressed by
+    # its own integer pk — a decision and an action item are not cards (item 9).
+    path("retrospectives/<int:pk>/review/", views.retro_review, name="retro-review"),
+    path(
+        "retrospectives/<int:pk>/review/accept-all/",
+        views.review_accept_all,
+        name="review-accept-all",
+    ),
+    path(
+        "retrospectives/<int:pk>/review/decisions/<int:decision_pk>/accept/",
+        views.review_decision_accept,
+        name="review-decision-accept",
+    ),
+    path(
+        "retrospectives/<int:pk>/review/decisions/<int:decision_pk>/edit/",
+        views.review_decision_edit,
+        name="review-decision-edit",
+    ),
+    path(
+        "retrospectives/<int:pk>/review/decisions/<int:decision_pk>/reject/",
+        views.review_decision_reject,
+        name="review-decision-reject",
+    ),
+    path(
+        "retrospectives/<int:pk>/review/action-items/<int:item_pk>/accept/",
+        views.review_action_item_accept,
+        name="review-action-item-accept",
+    ),
+    path(
+        "retrospectives/<int:pk>/review/action-items/<int:item_pk>/edit/",
+        views.review_action_item_edit,
+        name="review-action-item-edit",
+    ),
+    path(
+        "retrospectives/<int:pk>/review/action-items/<int:item_pk>/reject/",
+        views.review_action_item_reject,
+        name="review-action-item-reject",
+    ),
 ]
