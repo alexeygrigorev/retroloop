@@ -31,7 +31,7 @@ from projects.permissions import (
     can_view_summary,
 )
 from projects.views import member_or_404
-from retro.forms import ActionItemForm, DecisionForm, ReviewOwnerForm
+from retro.forms import ActionItemForm, DecisionForm, ExtractionSummaryForm, ReviewOwnerForm
 from retro.models import ActionItem, Cluster, Decision, Retrospective
 from retro.services import (
     StageError,
@@ -738,6 +738,53 @@ def review_action_item_edit(request: HttpRequest, pk: int, item_pk: int) -> Http
     return redirect("retro-review", pk=retro.pk)
 
 
+# --------------------------------------------------------------------------
+# The extracted meeting summary — reviewed here, gated on the summary page (#25)
+#
+# #23 writes `Retrospective.extraction_summary` as a DRAFT, exactly as it writes
+# draft decisions and action items. Until the facilitator confirms it here, the
+# summary screen (#25) does not show it — an unreviewed AI paragraph must not
+# publish itself to the team's record the moment extraction runs. Confirming, and
+# editing-then-confirming, mirror the draft decision flow above: only this cycle's
+# facilitator reaches them (`_review_retro_or_404`, the same
+# `can_confirm_extraction` gate #24 uses), and a member or a non-member gets the
+# 404 an unused id earns.
+# --------------------------------------------------------------------------
+
+
+@require_POST
+def review_summary_confirm(request: HttpRequest, pk: int) -> HttpResponse:
+    """Confirm the extracted meeting summary as it stands. This cycle's facilitator."""
+    retro = _review_retro_or_404(request, pk)
+    retro.extraction_summary_confirmed = True
+    retro.save(update_fields=["extraction_summary_confirmed"])
+    messages.success(request, "The meeting summary has been confirmed.")
+    return redirect("retro-review", pk=retro.pk)
+
+
+def review_summary_edit(request: HttpRequest, pk: int) -> HttpResponse:
+    """Re-word the extracted meeting summary, then confirm it. Facilitator only.
+
+    The save both writes the new text and confirms it, so an edited-then-confirmed
+    summary is indistinguishable from a plainly confirmed one afterwards — the same
+    shape as an edited-then-accepted decision.
+    """
+    retro = _review_retro_or_404(request, pk)
+    if request.method != "POST":
+        form = ExtractionSummaryForm(instance=retro)
+        return _render_review_summary_edit(request, retro, form)
+
+    form = ExtractionSummaryForm(request.POST, instance=retro)
+    if not form.is_valid():
+        return _render_review_summary_edit(request, retro, form, status=400)
+
+    edited = form.save(commit=False)
+    edited.extraction_summary_confirmed = True
+    edited.save(update_fields=["extraction_summary", "extraction_summary_confirmed"])
+    messages.success(request, "The meeting summary has been edited and confirmed.")
+    return redirect("retro-review", pk=retro.pk)
+
+
 def _draft_decision_or_message(
     request: HttpRequest, retro: Retrospective, decision_pk: int
 ) -> Decision | None:
@@ -779,8 +826,20 @@ def _render_review(request: HttpRequest, retro: Retrospective) -> HttpResponse:
         # so a draft can never be assigned to someone outside the project.
         "members": User.objects.filter(memberships__project=project).order_by("username"),
         "summary": retro.extraction_summary,
+        "summary_confirmed": retro.extraction_summary_confirmed,
     }
     return render(request, "retro/review.html", context)
+
+
+def _render_review_summary_edit(
+    request: HttpRequest, retro: Retrospective, form: ExtractionSummaryForm, status: int = 200
+) -> HttpResponse:
+    return render(
+        request,
+        "retro/review_summary_edit.html",
+        {"retro": retro, "cycle": retro.cycle, "project": retro.cycle.project, "form": form},
+        status=status,
+    )
 
 
 def _render_review_decision_edit(
@@ -982,7 +1041,11 @@ def retro_summary(request: HttpRequest, pk: int) -> HttpResponse:
         for value, label in Card.Category.choices
     ]
 
-    summary_text = retro.extraction_summary
+    # The extracted meeting summary appears only once the facilitator has confirmed
+    # it on the review screen (#24). #23 writes it as a draft, so an unconfirmed one
+    # is withheld exactly as an unconfirmed draft decision is — the record shows
+    # only what a person has reviewed.
+    summary_text = retro.extraction_summary if retro.extraction_summary_confirmed else ""
     recorded_anything = bool(
         topics
         or note_groups

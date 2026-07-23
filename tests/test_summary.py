@@ -265,7 +265,8 @@ def _seed_full_retro(project: Project, facilitator: User) -> Retrospective:
     )
 
     retro.extraction_summary = "The team talked about deploys and testing."
-    retro.save(update_fields=["extraction_summary"])
+    retro.extraction_summary_confirmed = True
+    retro.save(update_fields=["extraction_summary", "extraction_summary_confirmed"])
     return retro
 
 
@@ -311,10 +312,39 @@ def test_notes_carry_their_authors_and_sit_outside_the_card_container(project, f
 
 
 @pytest.mark.django_db
-def test_the_extracted_summary_text_is_shown(project, facilitator) -> None:
-    retro = _seed_full_retro(project, facilitator)
+def test_the_extracted_summary_text_is_shown_once_confirmed(project, facilitator) -> None:
+    retro = _seed_full_retro(project, facilitator)  # its summary is confirmed
     body = as_member("facilitator").get(summary_url(retro)).content.decode()
     assert "The team talked about deploys and testing." in body
+
+
+@pytest.mark.django_db
+def test_the_extracted_summary_is_hidden_until_it_is_confirmed(
+    project, facilitator, member
+) -> None:
+    """#23 writes the summary as a draft; an unconfirmed one must not publish itself.
+
+    This is exactly the leak QA found: the field is set the way extraction sets it
+    and the raw text is asserted absent from the record until the facilitator has
+    confirmed it on the review screen.
+    """
+    retro = make_retro(project, facilitator, stage=Stage.DISCUSS)
+    retro.extraction_summary = "An unreviewed AI paragraph that nobody has checked."
+    retro.extraction_summary_confirmed = False
+    retro.save(update_fields=["extraction_summary", "extraction_summary_confirmed"])
+
+    body = as_member("member").get(summary_url(retro)).content.decode()
+    assert "An unreviewed AI paragraph that nobody has checked." not in body
+    assert ">Summary<" not in body
+    # With nothing else recorded, the page says so rather than showing the draft.
+    assert "produced no recorded outcomes" in body
+
+    retro.extraction_summary_confirmed = True
+    retro.save(update_fields=["extraction_summary_confirmed"])
+
+    body = as_member("member").get(summary_url(retro)).content.decode()
+    assert "An unreviewed AI paragraph that nobody has checked." in body
+    assert ">Summary<" in body
 
 
 # --------------------------------------------------------------------------

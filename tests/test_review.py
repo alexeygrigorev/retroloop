@@ -647,3 +647,133 @@ def test_the_screen_shows_the_excerpt_and_leaks_no_card_handle(
     assert "public_id" not in body
     assert "is_anonymous" not in body
     assert "data-card" not in body
+
+
+# --------------------------------------------------------------------------
+# The extracted meeting summary: reviewed here, gated on the summary page (#25)
+#
+# #23 writes `Retrospective.extraction_summary` as a draft; #24 is where the
+# facilitator confirms it. Until then it is withheld from the summary screen, the
+# same as an unconfirmed draft decision. Confirming and editing-then-confirming
+# mirror the decision flow, and only this cycle's facilitator may do either.
+# --------------------------------------------------------------------------
+
+
+def with_summary(
+    retro: Retrospective, text: str = "The team talked about deploys."
+) -> Retrospective:
+    """An extracted, still-unconfirmed meeting summary — exactly what #23 writes."""
+    retro.extraction_summary = text
+    retro.extraction_summary_confirmed = False
+    retro.save(update_fields=["extraction_summary", "extraction_summary_confirmed"])
+    return retro
+
+
+@pytest.mark.django_db
+def test_the_review_screen_shows_the_summary_as_unconfirmed_until_confirmed(
+    retro: Retrospective, owner: User
+) -> None:
+    with_summary(retro)
+    client, token = strict_client(owner, reverse("retro-review", args=[retro.pk]))
+
+    body = client.get(reverse("retro-review", args=[retro.pk])).content.decode()
+    assert 'data-summary-confirmed="false"' in body
+
+    assert post(client, token, "review-summary-confirm", [retro.pk]).status_code == 302
+    body = client.get(reverse("retro-review", args=[retro.pk])).content.decode()
+    assert 'data-summary-confirmed="true"' in body
+
+
+@pytest.mark.django_db
+def test_confirming_the_summary_sets_the_flag_and_keeps_the_text(
+    retro: Retrospective, owner: User
+) -> None:
+    with_summary(retro, "A summary the facilitator is happy with.")
+    client, token = strict_client(owner, reverse("retro-review", args=[retro.pk]))
+
+    assert post(client, token, "review-summary-confirm", [retro.pk]).status_code == 302
+
+    retro.refresh_from_db()
+    assert retro.extraction_summary_confirmed is True
+    assert retro.extraction_summary == "A summary the facilitator is happy with."
+
+
+@pytest.mark.django_db
+def test_editing_the_summary_changes_the_text_and_confirms_it(
+    retro: Retrospective, owner: User
+) -> None:
+    with_summary(retro, "The rough extracted draft.")
+    client, token = strict_client(owner, reverse("retro-review", args=[retro.pk]))
+
+    response = post(
+        client,
+        token,
+        "review-summary-edit",
+        [retro.pk],
+        {"extraction_summary": "A polished summary."},
+    )
+
+    assert response.status_code == 302
+    retro.refresh_from_db()
+    assert retro.extraction_summary == "A polished summary."
+    assert retro.extraction_summary_confirmed is True
+
+
+@pytest.mark.django_db
+def test_a_plain_member_cannot_confirm_or_edit_the_summary(
+    retro: Retrospective, owner: User, ada: User
+) -> None:
+    """Proved with a valid token, and asserted as nothing changed — not just a code."""
+    with_summary(retro)
+    client, token = strict_client(ada, reverse("retro-outcomes", args=[retro.pk]))
+
+    assert post(client, token, "review-summary-confirm", [retro.pk]).status_code == 404
+    assert (
+        post(
+            client,
+            token,
+            "review-summary-edit",
+            [retro.pk],
+            {"extraction_summary": "Sneaky rewrite."},
+        ).status_code
+        == 404
+    )
+    assert client.get(reverse("review-summary-edit", args=[retro.pk])).status_code == 404
+
+    retro.refresh_from_db()
+    assert retro.extraction_summary_confirmed is False
+    assert retro.extraction_summary == "The team talked about deploys."
+
+
+@pytest.mark.django_db
+def test_a_non_member_cannot_confirm_or_edit_the_summary(
+    retro: Retrospective, outsider: User
+) -> None:
+    with_summary(retro)
+    client, token = strict_client(outsider, reverse("project-list"))
+
+    assert post(client, token, "review-summary-confirm", [retro.pk]).status_code == 404
+    assert (
+        post(
+            client,
+            token,
+            "review-summary-edit",
+            [retro.pk],
+            {"extraction_summary": "Sneaky rewrite."},
+        ).status_code
+        == 404
+    )
+
+    retro.refresh_from_db()
+    assert retro.extraction_summary_confirmed is False
+    assert retro.extraction_summary == "The team talked about deploys."
+
+
+@pytest.mark.django_db
+def test_an_anonymous_user_cannot_confirm_the_summary(retro: Retrospective) -> None:
+    with_summary(retro)
+    client = Client()
+
+    assert client.get(reverse("review-summary-edit", args=[retro.pk])).status_code == 404
+    retro.refresh_from_db()
+    assert retro.extraction_summary_confirmed is False

@@ -53,6 +53,20 @@ urlpatterns = [
         views.review_accept_all,
         name="review-accept-all",
     ),
+    # The extracted meeting summary is reviewed here too: confirm it as it stands,
+    # or edit-then-confirm. Facilitator only, and gated on the summary page (#25)
+    # until confirmed. Addressed by the retrospective's pk — there is one summary
+    # per retrospective, so no per-row handle.
+    path(
+        "retrospectives/<int:pk>/review/summary/confirm/",
+        views.review_summary_confirm,
+        name="review-summary-confirm",
+    ),
+    path(
+        "retrospectives/<int:pk>/review/summary/edit/",
+        views.review_summary_edit,
+        name="review-summary-edit",
+    ),
     path(
         "retrospectives/<int:pk>/review/decisions/<int:decision_pk>/accept/",
         views.review_decision_accept,

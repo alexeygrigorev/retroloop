@@ -90,6 +90,15 @@ class Retrospective(models.Model):
     # action items, it is an extracted draft, and #17 shipped no column for it, so
     # #23 adds this one plain text field rather than a second review-status model.
     extraction_summary = models.TextField(blank=True, default="")
+    # Whether the facilitator has reviewed and confirmed `extraction_summary`.
+    # #23 writes the summary as a DRAFT, exactly as it writes draft decisions and
+    # action items, and #24 is where the facilitator confirms it. The summary
+    # screen (#25) shows the extracted text only once this is True — an unreviewed
+    # AI paragraph must not publish itself to the team's record the moment
+    # extraction runs, the same gate the draft decisions and action items already
+    # have through their `CONFIRMED` status. False until confirmed, and False again
+    # for a fresh extraction, which writes new draft text.
+    extraction_summary_confirmed = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

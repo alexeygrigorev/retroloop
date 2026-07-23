@@ -1,0 +1,35 @@
+{% extends "base_app.html" %}
+{% comment %}
+  Re-wording the extracted meeting summary before confirming it. Only this cycle's
+  facilitator reaches this page — the view asks `can_confirm_extraction` and
+  answers everyone else the way an unused id is answered. Saving both writes the
+  edits and confirms the summary, so an edited-then-confirmed summary is
+  indistinguishable from a plainly confirmed one afterwards, and it appears on the
+  retrospective summary (#25) only from that point on.
+
+  The form posts to `request.path` rather than a `{% url %}` carrying the
+  retrospective's pk, mirroring the draft decision and action item edit screens.
+{% endcomment %}
+
+{% block title %}Edit the meeting summary — week of {{ cycle.week_start|date:'j F Y' }}{% endblock %}
+
+{% block content %}
+  <h1 class="page-heading">Edit the meeting summary</h1>
+  <p class="mt-2 text-sm text-slate-600">
+    <a href="{% url 'retro-review' retro.pk %}" class="link">Review the extracted drafts</a>
+    for the week of {{ cycle.week_start|date:'j F Y' }}
+  </p>
+
+  <section class="panel mt-8">
+    <h2 class="section-heading">The meeting summary</h2>
+    <form method="post" action="{{ request.path }}" class="form-fields">
+      {% csrf_token %}
+      {{ form.as_div }}
+      <button type="submit" class="btn-primary">Save and confirm</button>
+    </form>
+  </section>
+
+  <p class="mt-6 text-sm">
+    <a href="{% url 'retro-review' retro.pk %}" class="link">Back to the review</a>
+  </p>
+{% endblock %}

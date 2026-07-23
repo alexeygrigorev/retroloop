@@ -34,6 +34,23 @@
     <section class="panel mt-8" data-extraction-summary>
       <h2 class="section-heading">Meeting summary</h2>
       <p class="mt-2 text-sm text-slate-600">{{ summary }}</p>
+      {% if summary_confirmed %}
+        <p class="mt-2 text-xs text-slate-500" data-summary-confirmed="true">
+          Confirmed. It now appears on the retrospective summary.
+        </p>
+      {% else %}
+        <p class="mt-2 text-xs text-amber-700" data-summary-confirmed="false">
+          This is an extracted draft. It does not appear on the retrospective
+          summary until you confirm it.
+        </p>
+      {% endif %}
+      <div class="mt-1 flex gap-2">
+        <form method="post" action="{% url 'review-summary-confirm' retro.pk %}">
+          {% csrf_token %}
+          <button type="submit" class="btn-secondary">Confirm summary</button>
+        </form>
+        <a href="{% url 'review-summary-edit' retro.pk %}" class="link">Edit</a>
+      </div>
     </section>
   {% endif %}
 

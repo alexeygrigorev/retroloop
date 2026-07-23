@@ -119,6 +119,31 @@ class ActionItemForm(forms.ModelForm):
         return owner
 
 
+class ExtractionSummaryForm(forms.ModelForm):
+    """Edit the extracted meeting summary on the review screen (#24).
+
+    The facilitator re-words `Retrospective.extraction_summary` before confirming
+    it, the same way a draft decision or action item is edited-then-accepted. The
+    view sets `extraction_summary_confirmed` on save, so an edited-then-confirmed
+    summary is indistinguishable from a plainly confirmed one afterwards. The text
+    is optional — a facilitator may clear a summary they do not want on the record
+    — and whitespace-only is stored as empty rather than as blank text.
+    """
+
+    class Meta:
+        model = Retrospective
+        fields: ClassVar[list[str]] = ["extraction_summary"]
+        widgets: ClassVar[dict[str, forms.Widget]] = {
+            "extraction_summary": forms.Textarea(attrs={"rows": 4}),
+        }
+        labels: ClassVar[dict[str, str]] = {
+            "extraction_summary": "The meeting summary",
+        }
+
+    def clean_extraction_summary(self) -> str:
+        return self.cleaned_data["extraction_summary"].strip()
+
+
 class ReviewOwnerForm(forms.Form):
     """The owner a facilitator picks on the review screen when a draft has none (#24).
 
