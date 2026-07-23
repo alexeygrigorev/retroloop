@@ -72,13 +72,16 @@ from projects.permissions import (
     can_cast_vote,
     can_create_cluster,
     can_delete_cluster,
+    can_delete_note,
+    can_edit_note,
     can_merge_cluster,
     can_move_card,
     can_rename_cluster,
+    can_set_cluster_status,
     can_split_cluster,
     can_view_project,
 )
-from retro.models import CLUSTER_NAME_MAX_LENGTH, Cluster, Retrospective, Vote
+from retro.models import CLUSTER_NAME_MAX_LENGTH, Cluster, Note, Retrospective, Vote
 from retro.services import bump_version
 
 #: The largest value a `BigAutoField` can hold. A cluster id outside 1..this is
@@ -108,6 +111,20 @@ class BoardFrozen(BoardRejection):
     """This board does not accept this change at this stage."""
 
     status = 409
+
+
+class NotAllowed(BoardRejection):
+    """The caller may see this board, but is not the person allowed to do this.
+
+    A 403, not a 409 and not a 404: unlike the frozen-board rejections, nothing
+    about the caller's *view* is stale — a plain member who posts a status change
+    would get the same answer after any reload, because it is who they are and not
+    when they asked. And unlike the non-member 404, they are entitled to know the
+    board exists; they are a member of it, just not its facilitator (or, for a
+    note, not its author).
+    """
+
+    status = 403
 
 
 # --------------------------------------------------------------------------
@@ -429,6 +446,108 @@ def members_who_spent_everything(retro: Retrospective) -> int:
 
 
 # --------------------------------------------------------------------------
+# Discussion — #16
+#
+# Four more writes, all of them `change` functions run the same way as the nine
+# above: `apply_mutation()` takes the retrospective's row lock, refuses a
+# non-member with the same 404 an unused id gets, calls one of these inside the
+# transaction and bumps the version once if it returns True. So a status change
+# or a note added or removed is concurrency-safe on the same lock as every other
+# board mutation, and answers with the whole board state.
+#
+# All four belong to the DISCUSS stage and nowhere else: the agenda is worked
+# while the stage is DISCUSS, and once it is COMPLETE the notes are read-only for
+# everyone. `_require_discussion()` turns a request outside that window into the
+# 409 a stale board gets. Who may act — the facilitator for a status, the author
+# for an edit, the author or the facilitator for a delete — is asked of
+# `projects/permissions.py` and turned into a 403 by `_require_allowed()`.
+# --------------------------------------------------------------------------
+
+
+def set_cluster_status(user, retro: Retrospective, data) -> bool:
+    """`cluster` moves to `status`. The facilitator's call, during DISCUSS.
+
+    `status` is one of the four `Cluster.Status` values — DISCUSSED, SKIPPED,
+    DEFERRED, or back to PENDING for a mis-click. Anything else is a 400. Setting
+    a cluster to the status it already has changes nothing: it writes nothing,
+    bumps nothing, and answers with the same board.
+
+    Refused with a 409 outside DISCUSS, and with a 403 for a member who is not
+    this cycle's facilitator — a direct POST from a member changes no status.
+    """
+    cluster = _cluster_or_404(retro, data.get("cluster"))
+    status = _clean_status(data.get("status"))
+    _require_discussion(retro)
+    _require_allowed(can_set_cluster_status(user, cluster))
+
+    if cluster.status == status:
+        return False
+
+    cluster.status = status
+    cluster.save(update_fields=["status"])
+    return True
+
+
+def add_note(user, retro: Retrospective, data) -> bool:
+    """A new note by `user`, against `cluster` or against the retrospective.
+
+    Any project member may add one — membership is already established by
+    `apply_mutation()` before this runs — either against the cluster under
+    discussion (`cluster` names its integer id) or against the retrospective as a
+    whole (`cluster` absent or empty). A cluster from another board is a 404, the
+    same as everywhere else. Empty or whitespace-only text is a 400.
+
+    The note is always attributed: `author` is `user`, and there is no anonymous
+    alternative — `_docs/decisions.md` item 10. It carries no card and no card's
+    pk; it points at a cluster's integer id and at its own author, neither of
+    which is a fact the board keeps off itself.
+    """
+    _require_discussion(retro)
+    cluster = _optional_cluster_or_404(retro, data.get("cluster"))
+    text = _clean_note_text(data.get("text"))
+
+    Note.objects.create(retrospective=retro, cluster=cluster, author=user, text=text)
+    return True
+
+
+def edit_note(user, retro: Retrospective, data) -> bool:
+    """`note`'s text becomes `text`. The author's own, during DISCUSS.
+
+    Only the note's author may edit it, and only while the stage is DISCUSS: a
+    member who did not write the note gets a 403, and everyone gets a 409 once the
+    stage is COMPLETE, where notes are read-only. Empty or whitespace-only text is
+    a 400. Editing a note to the text it already holds changes nothing.
+    """
+    note = _note_or_404(retro, data.get("note"))
+    text = _clean_note_text(data.get("text"))
+    _require_discussion(retro)
+    _require_allowed(can_edit_note(user, note))
+
+    if note.text == text:
+        return False
+
+    note.text = text
+    note.save(update_fields=["text"])
+    return True
+
+
+def delete_note(user, retro: Retrospective, data) -> bool:
+    """`note` is removed. Its author or the cycle's facilitator, during DISCUSS.
+
+    Wider than editing: a facilitator working the agenda may clear any note, while
+    the author may clear their own. Everyone is refused with a 409 once the stage
+    is COMPLETE — notes are read-only then — and a member who is neither the
+    author nor the facilitator gets a 403.
+    """
+    note = _note_or_404(retro, data.get("note"))
+    _require_discussion(retro)
+    _require_allowed(can_delete_note(user, note))
+
+    note.delete()
+    return True
+
+
+# --------------------------------------------------------------------------
 # Resolving what a request names
 # --------------------------------------------------------------------------
 
@@ -489,6 +608,42 @@ def _cluster_or_404(retro: Retrospective, raw) -> Cluster:
     return cluster
 
 
+def _optional_cluster_or_404(retro: Retrospective, raw) -> Cluster | None:
+    """The cluster a note names, or None for a note against the whole retrospective.
+
+    A note's `cluster` is optional: absent or empty means the note is about the
+    retrospective as a whole. Anything present is resolved exactly like every
+    other cluster reference — against *this* retrospective, so a cluster from
+    another board is a 404 rather than a note quietly attached to the wrong one.
+    """
+    if raw is None or raw == "":
+        return None
+    return _cluster_or_404(retro, raw)
+
+
+def _note_or_404(retro: Retrospective, raw) -> Note:
+    """The note this request names, resolved against this retrospective.
+
+    A note is addressed by its integer primary key: `_docs/decisions.md` item 9
+    is about `Card` and says so, and a note is not a card. A note belonging to
+    another retrospective is a 404 and is never acted on, which is what scoping
+    the query to `retro` buys — the same shape as `_cluster_or_404`.
+    """
+    if not isinstance(raw, str):
+        raise Http404
+    try:
+        value = int(raw)
+    except ValueError:
+        raise Http404 from None
+    if not 1 <= value <= _MAX_PK:
+        raise Http404
+
+    note = Note.objects.filter(retrospective=retro, pk=value).first()
+    if note is None:
+        raise Http404
+    return note
+
+
 # --------------------------------------------------------------------------
 # Small rules
 # --------------------------------------------------------------------------
@@ -525,6 +680,61 @@ def _require_voting_open(permitted: bool) -> None:
             "Voting is not open on this retrospective, so votes cannot be changed. "
             "Reload the page to see where the retrospective has got to."
         )
+
+
+def _require_discussion(retro: Retrospective) -> None:
+    """Turn a request outside the DISCUSS stage into the 409 a stale board gets.
+
+    A status change and a note are actions of the discussion, and the discussion
+    is the DISCUSS stage: before it, the agenda does not exist yet; once the
+    retrospective is COMPLETE, the notes are read-only for everyone. Either way the
+    caller's view of the stage is out of date and reloading is the fix, which is a
+    409 and not a 403 — the same answer a card move on a frozen board gets.
+    """
+    if retro.stage != Retrospective.Stage.DISCUSS:
+        raise BoardFrozen(
+            "This retrospective is not in discussion, so its agenda and notes "
+            "cannot be changed. Reload the page to see where it has got to."
+        )
+
+
+def _require_allowed(permitted: bool) -> None:
+    """Turn a False from `projects/permissions.py` into the 403 for this board.
+
+    Reached only after the caller is established as a project member and the stage
+    as DISCUSS, so the only thing left for the predicate to be False about is who
+    they are: a member who is not the facilitator setting a status, or a member
+    who is neither the author nor the facilitator removing a note. That is a 403 —
+    they may see the board, but not do this — and not the 409 a stale stage gets.
+    """
+    if not permitted:
+        raise NotAllowed("You do not have permission to make that change to this retrospective.")
+
+
+def _clean_status(raw) -> str:
+    """One of the four `Cluster.Status` values, or a rejection saying it is not.
+
+    The status is set from a fixed set the model defines, so a value outside it is
+    a request that cannot be carried out as written — a 400 — rather than a write
+    the database would refuse with a driver error.
+    """
+    if raw in Cluster.Status.values:
+        return raw
+    allowed = ", ".join(Cluster.Status.values)
+    raise InvalidRequest(f"A cluster's status is one of: {allowed}.")
+
+
+def _clean_note_text(raw) -> str:
+    """A note's text, trimmed, or a rejection saying it is empty.
+
+    Empty or whitespace-only text is refused with a sentence — a note with nothing
+    in it is not something the team can read back. The check constraint on `Note`
+    holds the same rule where an endpoint cannot be gone round.
+    """
+    text = raw.strip() if isinstance(raw, str) else ""
+    if not text:
+        raise InvalidRequest("A note needs some text.")
+    return text
 
 
 def _vote_weight(retro: Retrospective, raw) -> int:

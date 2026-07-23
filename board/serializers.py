@@ -82,9 +82,20 @@ Otherwise — `v` is absent, stale, or unparseable — the full state::
         ],
         "remaining": 1             # budget minus everything they have spent
       },
-      "vote_totals": {"4": 5}      # votes per cluster id; PRESENT ONLY from
+      "vote_totals": {"4": 5},     # votes per cluster id; PRESENT ONLY from
                                    # DISCUSS on, absent (not empty, not zeroed)
                                    # at every earlier stage
+      "notes": [                   # the discussion's notes; PRESENT ONLY from
+                                   # DISCUSS on, absent at every earlier stage
+        {
+          "id": 9,                 # Note.pk — an integer, a note is not a card
+          "cluster": 4,            # the cluster it is against, or null for a
+                                   # note about the retrospective as a whole
+          "author": "Ada Viewer",  # the writer's display name; a note is always
+                                   # attributed — see note_payloads() and item 10
+          "text": "…"              # Note.text
+        }
+      ]
     }
 
 `cards` holds the viewer's own cards and nobody else's before `REVEAL`, and
@@ -132,6 +143,24 @@ the team, so the order clusters were created in is not a fact about a person and
 a sequence in the payload gives nothing away. The asymmetry with `cards[].id` is
 the decision, not an oversight.
 
+The `clusters` list is in `position` order up to VOTE, and in agenda order from
+DISCUSS on — #16. The agenda is highest vote weight first, ties broken by
+`position` then `id`, so it is a total order that does not reshuffle between
+polls and a cluster with no votes falls to the bottom rather than being hidden.
+It reuses the same totals `vote_totals` is built from, which appear only once the
+allocation is frozen, so ordering by weight reveals no member's individual vote —
+exactly the guarantee #15's gate already holds. The client renders the list in
+the order it arrives; there is one ordering rule, computed server-side, not two.
+
+`notes` is #16's, and carries the discussion's notes from DISCUSS on. A note is
+always attributed — `author` is the writer's display name — which item 10 allows
+for notes precisely because it forbids it for cards: a note has no anonymous
+alternative, so naming its author eliminates nobody. A note never carries a
+card's author or a card's `pk`: it points at a cluster's integer id, or at
+nothing, and at its own author, and at none of the facts the board keeps off
+itself. It carries no timestamp either — `created_at` orders the notes and stays
+on the row. See `note_payloads()`.
+
 `cards[].cluster` is the same integer, or null, and it is the only place the
 grouping is stated. A cluster does not carry a list of its cards: two statements
 of one relation drift, and the client that draws the board has every card in
@@ -178,13 +207,21 @@ def board_state(user, retro: Retrospective) -> dict:
     The caller has already established that `user` may view the project — this
     function answers *what*, never *whether*.
     """
+    # The totals are computed once and used twice: as the `vote_totals` key, and
+    # as the weight the DISCUSS agenda orders the clusters by. They are reached
+    # only when they may be seen, and from DISCUSS on every member may — which is
+    # exactly the stage the agenda exists in, so the two line up rather than
+    # needing separate gates. `None` outside that window, where the board keeps
+    # its `position` order and the totals key does not exist at all.
+    totals = vote_totals(retro) if can_see_vote_totals(user, retro) else None
+
     state = {
         "id": retro.pk,
         "stage": retro.stage,
         "version": retro.version,
         "changed": True,
         "cards": [card_payload(card, user) for card in visible_cards(user, retro)],
-        "clusters": cluster_payloads(retro),
+        "clusters": cluster_payloads(retro, totals),
         "votes": vote_payload(user, retro),
     }
 
@@ -193,8 +230,17 @@ def board_state(user, retro: Retrospective) -> dict:
     # secrecy criterion is that a voter's raw response body is free of any
     # indication that anyone else voted, and an absent key is the only shape
     # that stays true however the numbers are computed later.
-    if can_see_vote_totals(user, retro):
-        state["vote_totals"] = vote_totals(retro)
+    if totals is not None:
+        state["vote_totals"] = totals
+
+    # The discussion's notes, from DISCUSS on. Absent before then, the same way
+    # the totals are: there are no notes to carry until the agenda exists, and
+    # keeping the key out of the earlier stages leaves #11's and #12's payloads
+    # exactly as they were. Present and possibly empty from DISCUSS, where a
+    # member adds them and everyone polls them; still present and read-only at
+    # COMPLETE.
+    if retro.has_reached(Retrospective.Stage.DISCUSS):
+        state["notes"] = note_payloads(retro)
 
     return state
 
@@ -280,22 +326,42 @@ def card_payload(card: Card, user) -> dict:
 # --------------------------------------------------------------------------
 
 
-def cluster_payloads(retro: Retrospective) -> list[dict]:
-    """The board's clusters, in `position` order.
+def cluster_payloads(retro: Retrospective, totals: dict | None = None) -> list[dict]:
+    """The board's clusters, in board order — or, from DISCUSS, in agenda order.
 
     Nothing about a cluster is private — its name and its cards are the board —
     so this takes no user. What *is* private is how many votes are on it, which
     is why the totals live in their own key and not in these dicts.
 
-    One query whatever the board holds, and no card is reached from here: the
-    grouping is stated once, on the card. `Cluster.Meta.ordering` is
-    `["position", "id"]`, so the order is total and a poll cannot hand back the
-    same board in a different order.
+    The order is the whole of #16's agenda. Before DISCUSS `totals` is None and
+    the order is `position`, then `id` — `Cluster.Meta.ordering`, which is total,
+    so a poll cannot hand back the same board in a different order. From DISCUSS
+    `totals` carries each cluster's vote weight and the order becomes the agenda:
+    highest weight first, then `position`, then `id`. The tie-break is what keeps
+    the agenda from reshuffling itself between polls — two clusters on the same
+    weight always sort the same way — and a cluster with no votes has weight 0, so
+    it appears at the bottom rather than being hidden. The client renders the list
+    in the order it arrives and sorts by nothing itself, so there is one ordering
+    rule here and not two.
+
+    The weight comes from `totals`, the same grouped query `vote_totals()` already
+    ran for the totals key, so the agenda costs no query of its own: one query for
+    the clusters whatever the board holds, and no card is reached from here — the
+    grouping is stated once, on the card.
 
     No timestamp, for the same reason no card carries one: `position` is what
     draws the board, and a creation time on a row that cards point at is one
     more thing to line up against `Card.created_at`.
     """
+    clusters = retro.clusters.all()
+    if totals is not None:
+        # Sorted in Python over the handful of clusters a board holds, using the
+        # totals already in hand: `-weight` first for highest-first, then the
+        # model's own `position` and `id` as the stable tie-break.
+        clusters = sorted(
+            clusters,
+            key=lambda cluster: (-totals.get(cluster.pk, 0), cluster.position, cluster.pk),
+        )
     return [
         {
             "id": cluster.pk,
@@ -304,7 +370,7 @@ def cluster_payloads(retro: Retrospective) -> list[dict]:
             "is_auto_generated": cluster.is_auto_generated,
             "status": cluster.status,
         }
-        for cluster in retro.clusters.all()
+        for cluster in clusters
     ]
 
 
@@ -368,3 +434,47 @@ def vote_totals(retro: Retrospective) -> dict:
         Vote.objects.filter(retrospective=retro).values("cluster_id").annotate(total=Sum("weight"))
     )
     return {row["cluster_id"]: row["total"] for row in totals}
+
+
+# --------------------------------------------------------------------------
+# Notes — #16
+# --------------------------------------------------------------------------
+
+
+def note_payloads(retro: Retrospective) -> list[dict]:
+    """The discussion's notes, in `created_at` order, each with its author's name.
+
+    Reached only from DISCUSS on, so before then there is no notes key and no
+    query. A note is always attributed and the board says so — `author` is the
+    writer's display name — and that is correct: `_docs/decisions.md` item 10
+    destroys authorship on *cards*, because a name on one card identifies the
+    anonymous ones by elimination, and it says in as many words that a note is
+    different. A note is written in a live discussion and is already attributable
+    to whoever said it, so naming its author eliminates nothing.
+
+    What a note never carries is anything about a *card*: no card's author, and no
+    card's `pk`. It points at a `cluster` — the integer id the whole team made in
+    front of the team, `_docs/decisions.md` item 9 keeps *cards* to `public_id`
+    and says a cluster's is fine — or at nothing, a note about the retrospective
+    as a whole. So the board's card-privacy is untouched: a note leaks neither of
+    the two facts items 9 and 10 keep off the board.
+
+    No `created_at` in the body, only the order it imposes. The timestamp survives
+    on the row and orders the notes, but sending it would put a moment on the
+    board — one more thing a later feature could line up against `Card.created_at`,
+    which is the submission order the reveal's shuffle exists to destroy. A note's
+    `id` is its integer primary key — a note is not a card — and it is the handle
+    the edit and delete endpoints take.
+
+    One query, whatever the board holds: the notes for this retrospective with
+    their authors joined, so a board of forty notes costs no user fetch per note.
+    """
+    return [
+        {
+            "id": note.pk,
+            "cluster": note.cluster_id,
+            "author": note.author.display_name,
+            "text": note.text,
+        }
+        for note in retro.notes.select_related("author").all()
+    ]

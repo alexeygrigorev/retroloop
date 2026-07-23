@@ -26,4 +26,11 @@ urlpatterns = [
     path("retros/<int:pk>/votes/cast", views.vote_cast_view, name="board-vote-cast"),
     path("retros/<int:pk>/votes/withdraw", views.vote_withdraw_view, name="board-vote-withdraw"),
     path("retros/<int:pk>/votes/progress", views.vote_progress_view, name="board-vote-progress"),
+    # Discussion (#16), same prefix and style. Setting a cluster's status is the
+    # facilitator's; adding, editing and deleting a note are the members'. All
+    # four are POSTs that answer with the board, during the DISCUSS stage.
+    path("retros/<int:pk>/clusters/status", views.cluster_status_view, name="board-cluster-status"),
+    path("retros/<int:pk>/notes/add", views.note_add_view, name="board-note-add"),
+    path("retros/<int:pk>/notes/edit", views.note_edit_view, name="board-note-edit"),
+    path("retros/<int:pk>/notes/delete", views.note_delete_view, name="board-note-delete"),
 ]

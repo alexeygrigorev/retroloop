@@ -197,6 +197,61 @@ def vote_progress_view(request: HttpRequest, pk: int) -> JsonResponse:
     return JsonResponse({"finished": members_who_spent_everything(retro)})
 
 
+# --------------------------------------------------------------------------
+# Discussion — #16
+#
+# Four more writes, the same style: a POST with a CSRF token, answered with the
+# same full board state, so a client can replace its state and skip a poll. They
+# belong to the DISCUSS stage; `board/mutations.py` refuses one outside it with a
+# 409 and one the caller may not make with a 403, and this file stays as thin as
+# it is for the other writes. Separate URLs, so a client cannot reach one meaning
+# another, and none of them is a GET.
+# --------------------------------------------------------------------------
+
+
+@require_POST
+def cluster_status_view(request: HttpRequest, pk: int) -> JsonResponse:
+    """`POST /retros/<pk>/clusters/status` — `cluster` moves to `status`.
+
+    `cluster` is a cluster's integer id; `status` is one of the four
+    `Cluster.Status` values. The facilitator's call, during DISCUSS: a member's
+    direct POST is a 403, and a request outside DISCUSS is a 409.
+    """
+    return _write(request, pk, mutations.set_cluster_status)
+
+
+@require_POST
+def note_add_view(request: HttpRequest, pk: int) -> JsonResponse:
+    """`POST /retros/<pk>/notes/add` — a new attributed note by the caller.
+
+    `text` is the note; `cluster` is optional and names the cluster under
+    discussion, absent for a note about the retrospective as a whole. Any member
+    may add one during DISCUSS.
+    """
+    return _write(request, pk, mutations.add_note)
+
+
+@require_POST
+def note_edit_view(request: HttpRequest, pk: int) -> JsonResponse:
+    """`POST /retros/<pk>/notes/edit` — `note`'s text becomes `text`.
+
+    `note` is a note's integer id. The author's own, during DISCUSS: another
+    member editing it is a 403, and everyone gets a 409 once the stage is COMPLETE.
+    """
+    return _write(request, pk, mutations.edit_note)
+
+
+@require_POST
+def note_delete_view(request: HttpRequest, pk: int) -> JsonResponse:
+    """`POST /retros/<pk>/notes/delete` — `note` is removed.
+
+    Its author or this cycle's facilitator, during DISCUSS. A member who is
+    neither is a 403; once the stage is COMPLETE the notes are read-only and this
+    is a 409.
+    """
+    return _write(request, pk, mutations.delete_note)
+
+
 def _write(request: HttpRequest, pk: int, change) -> JsonResponse:
     """Run one operation and answer with the board, or with why it was refused.
 
