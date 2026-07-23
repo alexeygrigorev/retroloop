@@ -75,4 +75,11 @@ TRANSCRIPTION_CLIENT = "ai.fakes.EchoTranscriptionClient"
 # and the clustering tests inject a client that does — a scripted one, or the
 # real client driven by a fake SDK.
 CLUSTERING_CLIENT = "ai.fakes.NullClusteringClient"
+# Inert on purpose, exactly like CLUSTERING_CLIENT above: extraction is enqueued
+# after every transcription, and a stand-in that invented decisions and action
+# items would write draft rows under every fixture that runs the meeting
+# pipeline. The suite's default therefore extracts nothing, and the extraction
+# tests inject a client that does — a scripted one, or the real client driven by
+# a fake SDK.
+EXTRACTION_CLIENT = "ai.fakes.NullExtractionClient"
 OPENAI_API_KEY = ""

@@ -82,6 +82,14 @@ class Retrospective(models.Model):
     # message and never a traceback — the stack trace goes to the worker log,
     # not onto a page every member of the project can open.
     clustering_error = models.TextField(blank=True, default="")
+    # Where #23's extraction writes the short meeting summary it produced, as a
+    # draft the facilitator reviews in #24 and the summary screen shows in #25.
+    # Empty is the normal state until a meeting has been extracted, and a meeting
+    # where nothing was decided leaves it a one-line "nothing was decided" rather
+    # than blank. It is never published on its own: like the draft decisions and
+    # action items, it is an extracted draft, and #17 shipped no column for it, so
+    # #23 adds this one plain text field rather than a second review-status model.
+    extraction_summary = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -445,6 +453,11 @@ class Decision(models.Model):
         blank=True,
     )
     text = models.TextField()
+    # A short supporting quote from the transcript, so #24's reviewer sees what an
+    # extracted draft came from rather than judging a sentence in isolation (#23).
+    # Blank for a hand-written decision, which has no transcript behind it; #17
+    # shipped no column for it, so #23 adds it here.
+    excerpt = models.TextField(blank=True, default="")
     source = models.CharField(
         max_length=20,
         choices=Source.choices,
@@ -541,6 +554,10 @@ class ActionItem(models.Model):
         blank=True,
     )
     description = models.TextField()
+    # A short supporting quote from the transcript, mirroring `Decision.excerpt`:
+    # #24's reviewer sees what an extracted draft came from. Blank for a
+    # hand-written item, which has no transcript behind it (#23).
+    excerpt = models.TextField(blank=True, default="")
     # The assignee. Nullable and `SET_NULL`: an item may be unassigned, and a
     # member who leaves the project frees the item rather than leaving it pointing
     # at a user who is gone. It is validated against the project roster where it
