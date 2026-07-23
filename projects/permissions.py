@@ -31,7 +31,7 @@ this file.
 
 from cycles.models import Card, FeedbackCycle
 from projects.models import Membership, Project
-from retro.models import STAGE_ORDER, Cluster, Note, Retrospective
+from retro.models import STAGE_ORDER, ActionItem, Cluster, Decision, Note, Retrospective
 
 # --------------------------------------------------------------------------
 # Helpers. Not rules, so they are private and the public surface of this
@@ -377,6 +377,97 @@ def can_delete_note(user, note: Note) -> bool:
         _is_active_user(user)
         and (note.author_id == user.pk or _leads_cycle(user, note.retrospective.cycle))
         and note.retrospective.stage == Retrospective.Stage.DISCUSS
+    )
+
+
+# --------------------------------------------------------------------------
+# Decisions and action items — #17
+#
+# The retrospective's structured outcomes. Two kinds of rule, and the split is
+# the whole subtlety of the freeze at COMPLETE:
+#
+# - editing or deleting a manual entry — its *text* — is the author's or this
+#   cycle's facilitator's, and only *while the retrospective is not COMPLETE*.
+#   The stage is part of the answer, exactly as it is for `can_edit_note`,
+#   because a decision or an action item's words are frozen once the
+#   retrospective closes;
+# - flipping an action item between OPEN and DONE is the owner's or the
+#   facilitator's, at *any* stage, COMPLETE included. Work agreed one week is
+#   finished in another, so the tick box outlives the retrospective while its
+#   description does not.
+#
+# Both take the object, not the retrospective, because who may act depends on
+# who wrote it (`created_by`) or who owns it (`owner`) — a fact of the row. The
+# creation rule needs no predicate of its own: any project member may write an
+# outcome, and membership is already established by `can_view_project` at the
+# view, the same division `add_note` uses.
+#
+# `can_delete_decision` and `can_delete_action_item` are `can_edit_*` reused:
+# for these two the delete and the edit answer the same question — author or
+# facilitator, while not COMPLETE — so the delete site asks the question it means
+# and a later divergence is a change to one predicate, the pattern `can_delete_card`
+# follows.
+# --------------------------------------------------------------------------
+
+
+def can_edit_decision(user, decision: Decision) -> bool:
+    """The decision's author or this cycle's facilitator, while not COMPLETE.
+
+    Read-only for everyone once the retrospective is COMPLETE — a decision's text
+    is frozen then — so the stage is part of the answer rather than left to the
+    view. An author whose account is gone (`created_by` NULL, as on #23's
+    extracted rows) is matched by nobody, so only the facilitator may edit those.
+    """
+    retro = decision.retrospective
+    return (
+        _is_active_user(user)
+        and retro.stage != Retrospective.Stage.COMPLETE
+        and (
+            (decision.created_by_id is not None and decision.created_by_id == user.pk)
+            or _leads_cycle(user, retro.cycle)
+        )
+    )
+
+
+def can_delete_decision(user, decision: Decision) -> bool:
+    return can_edit_decision(user, decision)
+
+
+def can_edit_action_item(user, action: ActionItem) -> bool:
+    """The item's author or this cycle's facilitator, while not COMPLETE.
+
+    This is the *text* rule — the description is frozen at COMPLETE, exactly like
+    a decision's. Ticking the item off is a different question with a different
+    answer: see `can_update_action_item`, which stays True after COMPLETE.
+    """
+    retro = action.retrospective
+    return (
+        _is_active_user(user)
+        and retro.stage != Retrospective.Stage.COMPLETE
+        and (
+            (action.created_by_id is not None and action.created_by_id == user.pk)
+            or _leads_cycle(user, retro.cycle)
+        )
+    )
+
+
+def can_delete_action_item(user, action: ActionItem) -> bool:
+    return can_edit_action_item(user, action)
+
+
+def can_update_action_item(user, action: ActionItem) -> bool:
+    """Flip an action item between OPEN and DONE: its owner or the cycle's facilitator.
+
+    The predicate #6 could not write, because `ActionItem` did not exist yet. It
+    answers *who*, and it does not consult the stage: unlike editing the text,
+    ticking an item off is allowed after the retrospective is COMPLETE, because
+    the work outlives the meeting. Nobody else — a plain member who is neither the
+    owner nor this week's facilitator gets False here and a 403 at the view. An
+    item with no owner (`owner` NULL) is nobody's to tick but the facilitator's.
+    """
+    return _is_active_user(user) and (
+        (action.owner_id is not None and action.owner_id == user.pk)
+        or _leads_cycle(user, action.retrospective.cycle)
     )
 
 

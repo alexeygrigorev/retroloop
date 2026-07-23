@@ -19,6 +19,7 @@ from typing import ClassVar
 from django.conf import settings
 from django.db import models
 from django.urls import reverse
+from django.utils import timezone
 
 from cycles.models import FeedbackCycle
 
@@ -386,3 +387,225 @@ class Note(models.Model):
 
     def __str__(self) -> str:
         return f"Note by {self.author_id} on retrospective {self.retrospective_id}"
+
+
+class Decision(models.Model):
+    """One thing the team decided, written down during or after the meeting.
+
+    A decision is a structured outcome of the retrospective — #16's notes are the
+    free-text record of the discussion; this is what the team settled. It hangs
+    off the retrospective and, optionally, off a `cluster` (the topic it came out
+    of), never off a `Card`: like a `Note` it points at a cluster's integer id
+    (a handle the whole team made in front of the team) and never at a card's
+    author or a card's `pk`. `_docs/decisions.md` items 9 and 10 are about
+    `Card`, and a decision touches no card, so nothing here can leak who wrote
+    what or which card was anonymous.
+
+    `source` and `review_status`/`status` carry defaults that make the
+    hand-written flow correct without special-casing, and exist from the first
+    migration for the tasks that fill them later:
+
+    - anything a person types is `source=MANUAL` and lands `status=CONFIRMED` —
+      a person typing it *is* the review step;
+    - #23's extraction writes rows `source=EXTRACTED`, `status=DRAFT`, and #24
+      promotes them to `CONFIRMED`. Adding the columns then would be a migration
+      on rows that matter, so they are here now.
+
+    `created_by` is the author — the member who wrote it by hand — and is how the
+    "the author or the facilitator may edit it" rule in `projects/permissions.py`
+    knows whose entry it is. It is nullable and `SET_NULL`, like `Card.author`: a
+    member who leaves takes their name off the row rather than leaving it
+    pointing at a user that is gone, and #23's extracted rows have no human
+    author and carry NULL. It records *who wrote the outcome*, which is not a
+    fact item 9 or 10 keeps off any screen — a decision is an assigned,
+    attributed record, not anonymous feedback.
+    """
+
+    class Source(models.TextChoices):
+        MANUAL = "MANUAL", "Manual"
+        EXTRACTED = "EXTRACTED", "Extracted"
+
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        CONFIRMED = "CONFIRMED", "Confirmed"
+
+    retrospective = models.ForeignKey(
+        Retrospective,
+        on_delete=models.CASCADE,
+        related_name="decisions",
+    )
+    # Nullable: a decision about the retrospective as a whole has no cluster.
+    # Resolved against this retrospective before it is written, so the two can
+    # never point at different boards.
+    cluster = models.ForeignKey(
+        Cluster,
+        on_delete=models.CASCADE,
+        related_name="decisions",
+        null=True,
+        blank=True,
+    )
+    text = models.TextField()
+    source = models.CharField(
+        max_length=20,
+        choices=Source.choices,
+        default=Source.MANUAL,
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.CONFIRMED,
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        # Insertion order, `id` alone: the list on the page reads in the order
+        # the outcomes were written, and there is no timestamp to correlate with
+        # `Card.created_at` — the same reasoning `Cluster` uses for having none.
+        ordering: ClassVar[list[str]] = ["id"]
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            # The form rejects blank or whitespace-only text with a sentence;
+            # this is the same rule where a form cannot be gone round.
+            models.CheckConstraint(
+                condition=~models.Q(text__regex=r"^\s*$"),
+                name="retro_decision_text_not_blank",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Decision on retrospective {self.retrospective_id}"
+
+
+class ActionItem(models.Model):
+    """One thing someone is going to do, agreed in the retrospective.
+
+    Unlike a decision, an action item names a person: its `owner` is who is doing
+    it. That is the whole point — it is an assigned task, not anonymous feedback,
+    so naming the owner is exactly what it is for. The owner is a member of the
+    project or nobody (`owner` is nullable): an item can be recorded before it is
+    assigned, and #23's extraction leaves it NULL when it cannot resolve a name
+    against the roster, or when the name is ambiguous, for the facilitator to
+    pick later. An unassigned item is shown, not hidden.
+
+    Like a `Decision` and a `Note` it points at a `cluster` (the topic) or at
+    nothing, and never at a `Card`: no card author, no card `pk`, nothing items 9
+    and 10 keep off a screen.
+
+    An action item belongs to the one retrospective where it was agreed and is
+    never copied into another — `_docs/decisions.md` item 5. The project-wide
+    open-actions list (#26) is a live query across retrospectives for
+    `status=OPEN`, never a second copy that could drift.
+
+    `status` outlives the retrospective on purpose: after the retrospective is
+    COMPLETE its `description` is frozen, but the owner (or the facilitator) can
+    still move `status` between OPEN and DONE, because work agreed one week is
+    finished in another. Which fields freeze and which stays writable is enforced
+    in `projects/permissions.py`: `can_edit_action_item` (text) goes read-only at
+    COMPLETE, `can_update_action_item` (the tick box) does not.
+
+    `source` and `review_status` mirror `Decision`: a hand-written item is
+    `MANUAL`/`CONFIRMED`, #23 writes `EXTRACTED`/`DRAFT` and #24 promotes it, and
+    the columns exist from the first migration so that is not a later migration on
+    live rows. `created_by` is the author, exactly as on `Decision`; `owner` is a
+    separate field because who wrote the item down and who has to do it are not
+    the same person.
+    """
+
+    class Source(models.TextChoices):
+        MANUAL = "MANUAL", "Manual"
+        EXTRACTED = "EXTRACTED", "Extracted"
+
+    class Status(models.TextChoices):
+        OPEN = "OPEN", "Open"
+        DONE = "DONE", "Done"
+
+    class ReviewStatus(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        CONFIRMED = "CONFIRMED", "Confirmed"
+
+    retrospective = models.ForeignKey(
+        Retrospective,
+        on_delete=models.CASCADE,
+        related_name="action_items",
+    )
+    cluster = models.ForeignKey(
+        Cluster,
+        on_delete=models.CASCADE,
+        related_name="action_items",
+        null=True,
+        blank=True,
+    )
+    description = models.TextField()
+    # The assignee. Nullable and `SET_NULL`: an item may be unassigned, and a
+    # member who leaves the project frees the item rather than leaving it pointing
+    # at a user who is gone. It is validated against the project roster where it
+    # is set — an owner who is not a member is a validation error, never a stored
+    # row.
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="action_items",
+        null=True,
+        blank=True,
+    )
+    # A date and not a datetime: an action is due on a day, not at an instant. It
+    # may be in the past — recording a date that has already slipped is
+    # legitimate — so nothing here forbids it; the form says so in words.
+    due_date = models.DateField(null=True, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.OPEN,
+    )
+    source = models.CharField(
+        max_length=20,
+        choices=Source.choices,
+        default=Source.MANUAL,
+    )
+    review_status = models.CharField(
+        max_length=20,
+        choices=ReviewStatus.choices,
+        default=ReviewStatus.CONFIRMED,
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        ordering: ClassVar[list[str]] = ["id"]
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.CheckConstraint(
+                condition=~models.Q(description__regex=r"^\s*$"),
+                name="retro_action_item_description_not_blank",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Action item on retrospective {self.retrospective_id}"
+
+    @property
+    def is_unassigned(self) -> bool:
+        """No owner yet. Displayed, never hidden — the AC says so in as many words."""
+        return self.owner_id is None
+
+    @property
+    def is_overdue(self) -> bool:
+        """Past its due date and still open. A done item is never overdue.
+
+        `timezone.localdate()` so "today" is the project's day, not UTC's, and a
+        due date with no time cannot be an hour early or late at the boundary.
+        """
+        return (
+            self.status == self.Status.OPEN
+            and self.due_date is not None
+            and self.due_date < timezone.localdate()
+        )

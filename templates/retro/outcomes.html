@@ -1,0 +1,144 @@
+{% extends "base_app.html" %}
+{% comment %}
+  The retrospective's decisions and action items, written by hand. Every project
+  member sees the lists; any member may add to them. Whether the Edit, Delete and
+  tick-off controls are shown is decided in the view against
+  `projects/permissions.py` and set on each row as `can_edit`/`can_update` — the
+  server refuses anyone the button is hidden from anyway, and hiding it is not
+  what enforces it.
+
+  This is a server-rendered screen, not the React board island: a change here
+  does not touch `Retrospective.version`, because these outcomes are not part of
+  the board state the island polls.
+{% endcomment %}
+
+{% block title %}Decisions and action items — week of {{ cycle.week_start|date:'j F Y' }}{% endblock %}
+
+{% block content %}
+  <h1 class="page-heading">Decisions and action items</h1>
+  <p class="mt-2 text-sm text-slate-600">
+    <a href="{{ project.get_absolute_url }}" class="link">{{ project.name }}</a>
+    —
+    <a href="{{ retro.get_absolute_url }}" class="link">the retrospective</a>
+    for the week of {{ cycle.week_start|date:'j F Y' }}
+  </p>
+
+  <section class="panel mt-8">
+    <h2 class="section-heading">Decisions</h2>
+    {% if decisions %}
+      <ul class="list-rows">
+        {% for decision in decisions %}
+          <li data-decision="{{ decision.pk }}" data-source="{{ decision.source }}">
+            <p>{{ decision.text }}</p>
+            {% if decision.cluster %}
+              <p class="text-xs text-slate-500">About: {{ decision.cluster.name }}</p>
+            {% endif %}
+            {% if decision.can_edit %}
+              <div class="mt-1 flex gap-2">
+                <a href="{% url 'decision-edit' decision.pk %}" class="link">Edit</a>
+                <form method="post" action="{% url 'decision-delete' decision.pk %}">
+                  {% csrf_token %}
+                  <button type="submit" class="btn-secondary">Delete</button>
+                </form>
+              </div>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="mt-2 text-sm text-slate-600" data-empty="decisions">
+        Nothing has been decided yet.
+      </p>
+    {% endif %}
+  </section>
+
+  <section class="panel mt-8">
+    <h2 class="section-heading">Record a decision</h2>
+    <form
+      method="post"
+      action="{% url 'decision-create' retro.pk %}"
+      class="form-fields"
+    >
+      {% csrf_token %}
+      {{ decision_form.as_div }}
+      <button type="submit" class="btn-primary">Record the decision</button>
+    </form>
+  </section>
+
+  <section class="panel mt-8">
+    <h2 class="section-heading">Action items</h2>
+    {% if action_items %}
+      <ul class="list-rows">
+        {% for item in action_items %}
+          <li
+            data-action-item="{{ item.pk }}"
+            data-status="{{ item.status }}"
+            data-source="{{ item.source }}"
+            {% if item.is_unassigned %}data-unassigned="true"{% endif %}
+            {% if item.is_overdue %}data-overdue="true"{% endif %}
+          >
+            <p>{{ item.description }}</p>
+            <p class="text-xs text-slate-500">
+              {% if item.is_unassigned %}
+                <span class="font-medium">Unassigned</span>
+              {% else %}
+                Owner: {{ item.owner.display_name }}
+              {% endif %}
+              —
+              {% if item.due_date %}
+                Due {{ item.due_date|date:'j F Y' }}{% if item.is_overdue %}
+                  <span class="font-medium text-red-700">(overdue)</span>
+                {% endif %}
+              {% else %}
+                No due date
+              {% endif %}
+              —
+              {{ item.get_status_display }}
+            </p>
+            {% if item.cluster %}
+              <p class="text-xs text-slate-500">About: {{ item.cluster.name }}</p>
+            {% endif %}
+            <div class="mt-1 flex gap-2">
+              {% if item.can_update %}
+                <form method="post" action="{% url 'action-item-toggle' item.pk %}">
+                  {% csrf_token %}
+                  <button type="submit" class="btn-secondary">
+                    {% if item.status == 'DONE' %}Reopen{% else %}Mark done{% endif %}
+                  </button>
+                </form>
+              {% endif %}
+              {% if item.can_edit %}
+                <a href="{% url 'action-item-edit' item.pk %}" class="link">Edit</a>
+                <form method="post" action="{% url 'action-item-delete' item.pk %}">
+                  {% csrf_token %}
+                  <button type="submit" class="btn-secondary">Delete</button>
+                </form>
+              {% endif %}
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="mt-2 text-sm text-slate-600" data-empty="action-items">
+        No action items yet.
+      </p>
+    {% endif %}
+  </section>
+
+  <section class="panel mt-8">
+    <h2 class="section-heading">Record an action item</h2>
+    <form
+      method="post"
+      action="{% url 'action-item-create' retro.pk %}"
+      class="form-fields"
+    >
+      {% csrf_token %}
+      {{ action_item_form.as_div }}
+      <button type="submit" class="btn-primary">Record the action item</button>
+    </form>
+  </section>
+
+  <p class="mt-6 text-sm">
+    <a href="{{ retro.get_absolute_url }}" class="link">Back to the retrospective</a>
+  </p>
+{% endblock %}

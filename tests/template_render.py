@@ -60,7 +60,8 @@ from meetings.uploads import (
     VIDEO_EXTENSIONS,
 )
 from projects.models import Membership, Project
-from retro.models import Retrospective
+from retro.forms import ActionItemForm, DecisionForm
+from retro.models import ActionItem, Cluster, Decision, Retrospective
 from retro.views import board_bootstrap
 
 BASE_DIR = Path(settings.BASE_DIR)
@@ -166,6 +167,28 @@ def scene(name: str) -> tuple[dict, HttpRequest]:
         error_message="" if permitted else "The transcription service refused the file.",
     )
 
+    # #17's outcomes. A cluster to attach them to, one decision and one action
+    # item, each carrying the per-viewer flags the view sets on the row so both
+    # sides of every control's `{% if %}` are rendered across the two scenes. The
+    # action item is unassigned and overdue in the refused scene, so the marked
+    # branches render too.
+    cluster = Cluster.objects.create(retrospective=retro, name="Deploys", position=1)
+    decision = Decision.objects.create(
+        retrospective=retro, cluster=cluster, text="Pair on the deploy script.", created_by=user
+    )
+    decision.can_edit = permitted
+    action_item = ActionItem.objects.create(
+        retrospective=retro,
+        cluster=cluster,
+        description="Write the runbook.",
+        owner=user if permitted else None,
+        due_date=None if permitted else date(2020, 1, 1),
+        status=ActionItem.Status.OPEN,
+        created_by=user,
+    )
+    action_item.can_edit = permitted
+    action_item.can_update = permitted
+
     # The sections are the view's own, so what is swept is what a browser gets:
     # `card_section()` fills in the form, the remaining characters and `can_add`
     # from the cycle it is given. The refused scene asks for the category the
@@ -183,6 +206,8 @@ def scene(name: str) -> tuple[dict, HttpRequest]:
         "record": record,
         "section": section,
         "form": CardForm(),
+        "decision_form": DecisionForm(retrospective=retro),
+        "action_item_form": ActionItemForm(retrospective=retro, project=project),
         "remaining": CARD_TEXT_MAX_LENGTH,
         "stages": Retrospective.Stage.choices,
         "next_stage_label": Retrospective.Stage.COMPLETE.label,
@@ -198,6 +223,8 @@ def scene(name: str) -> tuple[dict, HttpRequest]:
         # every page are rendered across the two scenes.
         "projects": [project] if permitted else [],
         "cycles": [cycle] if permitted else [],
+        "decisions": [decision],
+        "action_items": [action_item],
         "memberships": project.memberships.all() if permitted else [],
         "cards": [card] if permitted else [],
         "sections": sections if permitted else [],
