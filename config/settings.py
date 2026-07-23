@@ -71,6 +71,9 @@ INSTALLED_APPS = [
     "retro",
     "board",
     "meetings",
+    # Carries the seed_demo management command only: no models, no migrations,
+    # no views, no URLs. It sits below the apps it fills, which never import it.
+    "demo",
 ]
 
 MIDDLEWARE = [

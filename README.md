@@ -99,3 +99,38 @@ password reset. A user who forgets their password is reset by an administrator:
 ```bash
 uv run manage.py changepassword <username>
 ```
+
+## Demo data
+
+`seed_demo` fills a development database with one realistic team so every screen
+can be opened and clicked through without running the flow by hand or spending
+anything on the OpenAI API:
+
+```bash
+uv run manage.py seed_demo
+```
+
+It **refuses to run unless `DEBUG` is on** — this is development-only data and
+must never be seeded anywhere real. There is no flag or environment variable
+that overrides that. Run it again and it deletes the demo projects and users it
+owns and rebuilds exactly the same data, touching nothing else.
+
+It creates two projects — `Platform Team` (three weeks of history: a completed
+retrospective, a middle one paused at its draft-review screen, and an open
+collection week) and `Design Guild` (empty, for the empty-state screens). Every
+demo user shares one password, printed on success along with the URLs worth
+opening:
+
+| username | display name | role | notes |
+| --- | --- | --- | --- |
+| `demo_priya` | Priya Raman | owner, facilitator | open most screens as this user |
+| `demo_mei` | Mei Lin | facilitator | |
+| `demo_sam` | Sam Okafor | member | facilitates cycle 2; the draft-review screen is hers |
+| `demo_alex_n` | Alex Novak | member | shares a first name with Alex Turner on purpose |
+| `demo_alex_t` | Alex Turner | member | |
+| `demo_tom` | Tom Weber | member | submits nothing, so "did not submit" is visible |
+| `demo_admin` | Demo Admin | superuser, on no project | opening a demo project gives 404 |
+
+The shared password is **`retro-demo-2026`** (override with `--password`). It is
+published here on purpose: this data is disposable and lives only where `DEBUG`
+is on. `--seed <int>` produces a different but reproducible dataset.

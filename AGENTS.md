@@ -21,6 +21,10 @@ Commands
   behind. It never touches media a live worker holds, and never judges a file a
   record still names by age. `--min-age 0` removes the only guard on an upload
   that is still being written, so leave it alone outside a test
+- `uv run manage.py seed_demo` - fill a development database with one realistic
+  demo team and three weeks of history, so every MVP screen can be opened
+  without running the flow by hand. Refuses to run unless `DEBUG` is on; re-run
+  it and it rebuilds the same data. See `README.md` for the login credentials
 - `uv run pytest` - the whole suite. The tests that read a built asset build it
   first, once per session, so a fresh checkout does not have to remember the npm
   commands below; a build that does not produce its file fails the run, naming
