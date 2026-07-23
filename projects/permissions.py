@@ -22,14 +22,16 @@ here; a second `permissions.py` anywhere is the thing this file exists to
 prevent.
 
 Not here yet, deliberately: `can_update_action_item` waits for `ActionItem`
-(#17), and the rules guarding `Note` wait for that model (#16). Each of those
-issues adds its predicate to this file. The `Cluster` rules arrived with #12 and
-are below, beside `can_move_card`.
+(#17). Each of those issues adds its predicate to this file. The `Cluster` rules
+arrived with #12 and are below, beside `can_move_card`; the discussion rules —
+setting a cluster's status, and editing or deleting a note — arrived with #16,
+which is where `Cluster.status` and `Note` first exist, and are at the foot of
+this file.
 """
 
 from cycles.models import Card, FeedbackCycle
 from projects.models import Membership, Project
-from retro.models import STAGE_ORDER, Cluster, Retrospective
+from retro.models import STAGE_ORDER, Cluster, Note, Retrospective
 
 # --------------------------------------------------------------------------
 # Helpers. Not rules, so they are private and the public surface of this
@@ -307,6 +309,74 @@ def can_see_vote_totals(user, retro: Retrospective) -> bool:
         _is_active_user(user)
         and _stage_past(retro, Retrospective.Stage.VOTE)
         and _is_member(user, retro.cycle.project)
+    )
+
+
+# --------------------------------------------------------------------------
+# Discussion — #16
+#
+# The two rules the discussion needs that #6 could not write, because
+# `Cluster.status` and `Note` did not exist when it ran, plus a third for the
+# note edit path. They live here, in the one module, and not in `retro/` or
+# `board/`: from #10 onward every app imports its rules from this file and adds
+# no second permissions module.
+#
+# `can_set_cluster_status` is the facilitator, at any stage: whether the board is
+# in the stage where a status may be set is not a question about *who* the caller
+# is, so — like `can_advance_stage` — the predicate answers only the who, and the
+# DISCUSS window is enforced at the mutation, which is the one place the action
+# and the stage are both known.
+#
+# `can_delete_note` and `can_edit_note` do carry the stage, because their answer
+# genuinely differs by it: a note is the author's to edit and the author's or the
+# facilitator's to delete *while the stage is DISCUSS*, and read-only for everyone
+# once it is COMPLETE. Editing is the author's alone — a facilitator may remove a
+# note but never rewrite one and leave someone else's name on the new words, which
+# is why editing is a rule of its own rather than `can_delete_note` reused.
+# --------------------------------------------------------------------------
+
+
+def can_set_cluster_status(user, cluster: Cluster) -> bool:
+    """This cycle's facilitator, and nobody else. A member's direct POST is refused.
+
+    Answers only *who*: the DISCUSS window in which a status may be set is checked
+    at the mutation, the same division of labour `can_advance_stage` keeps. A
+    project member who is not this week's facilitator gets False here and a 403 at
+    the endpoint; a non-member never reaches this predicate at all.
+    """
+    return _is_active_user(user) and _leads_cycle(user, cluster.retrospective.cycle)
+
+
+def can_edit_note(user, note: Note) -> bool:
+    """The note's author, while the stage is DISCUSS. Nobody else edits it.
+
+    A member edits their own notes and only their own — rewriting another
+    member's attributed note would put words in a mouth that is not theirs, which
+    is the one thing "always attributed" rules out. The facilitator's power over a
+    note is to delete it, not to edit it, so this is deliberately narrower than
+    `can_delete_note` and not the same rule reused.
+
+    Read-only once the retrospective is COMPLETE, which is why the stage is part
+    of the answer rather than left to the endpoint.
+    """
+    return (
+        _is_active_user(user)
+        and note.author_id == user.pk
+        and note.retrospective.stage == Retrospective.Stage.DISCUSS
+    )
+
+
+def can_delete_note(user, note: Note) -> bool:
+    """The note's author or the cycle's facilitator, while the stage is DISCUSS.
+
+    Wider than `can_edit_note`: a facilitator working the agenda may clear any
+    note, but only the author may change what a note says. Read-only for everyone
+    once the retrospective is COMPLETE, so the stage is part of the answer.
+    """
+    return (
+        _is_active_user(user)
+        and (note.author_id == user.pk or _leads_cycle(user, note.retrospective.cycle))
+        and note.retrospective.stage == Retrospective.Stage.DISCUSS
     )
 
 

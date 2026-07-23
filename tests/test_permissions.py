@@ -48,13 +48,16 @@ from projects.permissions import (
     can_create_cluster,
     can_delete_card,
     can_delete_cluster,
+    can_delete_note,
     can_edit_card,
+    can_edit_note,
     can_merge_cluster,
     can_move_card,
     can_open_cycle,
     can_rename_cluster,
     can_rotate_join_token,
     can_see_vote_totals,
+    can_set_cluster_status,
     can_split_cluster,
     can_start_retrospective,
     can_upload_recording,
@@ -62,7 +65,7 @@ from projects.permissions import (
     can_view_project,
     can_view_summary,
 )
-from retro.models import STAGE_ORDER, Cluster, Retrospective
+from retro.models import STAGE_ORDER, Cluster, Note, Retrospective
 
 User = get_user_model()
 
@@ -140,10 +143,22 @@ class World:
         # retrospective, so a cycle that has not started one has no board to
         # hold clusters. The rules that take one are given a world with a stage.
         self.cluster = None
+        # A note exists on the same terms — it hangs off the retrospective too.
+        # #16's note rules are given a world with a stage, and the note is the
+        # `lead`'s own, so `lead` is both its author and (as this cycle's
+        # facilitator) allowed to delete it, which is what makes the refusal tests
+        # for every other person non-vacuous.
+        self.note = None
         if stage is not None:
             self.retro = Retrospective.objects.create(cycle=self.cycle, stage=stage)
             self.cluster = Cluster.objects.create(
                 retrospective=self.retro, name="Deploys", position=1
+            )
+            self.note = Note.objects.create(
+                retrospective=self.retro,
+                cluster=self.cluster,
+                author=self.lead,
+                text="A point raised in the discussion",
             )
 
         self.refresh()
@@ -161,6 +176,10 @@ class World:
             self.cluster = Cluster.objects.select_related("retrospective__cycle__project").get(
                 pk=self.cluster.pk
             )
+        if self.note is not None:
+            self.note = Note.objects.select_related("retrospective__cycle__project", "author").get(
+                pk=self.note.pk
+            )
 
     def obj(self, kind: str):
         return {
@@ -169,6 +188,7 @@ class World:
             "card": self.card,
             "retro": self.retro,
             "cluster": self.cluster,
+            "note": self.note,
         }[kind]
 
 
@@ -253,6 +273,15 @@ RULES: dict[str, Rule] = {
     ),
     "can_see_vote_totals": Rule(
         can_see_vote_totals, "retro", stage=Stage.DISCUSS, status=Status.CLOSED, member=True
+    ),
+    "can_set_cluster_status": Rule(
+        can_set_cluster_status, "cluster", stage=Stage.DISCUSS, status=Status.CLOSED, member=False
+    ),
+    "can_edit_note": Rule(
+        can_edit_note, "note", stage=Stage.DISCUSS, status=Status.CLOSED, member=False
+    ),
+    "can_delete_note": Rule(
+        can_delete_note, "note", stage=Stage.DISCUSS, status=Status.CLOSED, member=False
     ),
     "can_upload_recording": Rule(
         can_upload_recording, "retro", stage=Stage.DISCUSS, status=Status.CLOSED, member=False
@@ -763,6 +792,93 @@ def test_authority_over_a_retrospective_is_per_cycle_not_per_project() -> None:
     assert can_advance_stage(world.other_lead, world.retro) is False
     assert can_upload_recording(world.other_lead, world.retro) is False
     assert can_confirm_extraction(world.other_lead, world.retro) is False
+
+
+# --------------------------------------------------------------------------
+# Discussion — #16
+# --------------------------------------------------------------------------
+
+
+def make_note(world: World, author: User, text: str = "A note in the discussion") -> Note:
+    """One note on the world's board, by `author`. The world must have a stage."""
+    return Note.objects.create(
+        retrospective=world.retro, cluster=world.cluster, author=author, text=text
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("stage", STAGE_ORDER)
+def test_setting_a_cluster_status_is_this_cycles_facilitator_at_every_stage(stage: str) -> None:
+    """Only the cycle's facilitator, and the predicate answers who — not which stage.
+
+    The DISCUSS window in which a status may actually be set is enforced at the
+    endpoint, the same division of labour `can_advance_stage` keeps, so the
+    predicate is True for the facilitator at every stage and False for everyone
+    else — a member's direct POST included.
+    """
+    world = build(stage=stage, status=Status.CLOSED)
+
+    assert can_set_cluster_status(world.lead, world.cluster) is True
+    # A facilitator of the project who is not this week's facilitator.
+    assert can_set_cluster_status(world.other_lead, world.cluster) is False
+    assert can_set_cluster_status(world.member, world.cluster) is False
+    assert can_set_cluster_status(world.outsider, world.cluster) is False
+    assert can_set_cluster_status(world.superuser, world.cluster) is False
+    assert can_set_cluster_status(world.anonymous, world.cluster) is False
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("stage", STAGE_ORDER)
+def test_editing_a_note_is_its_author_alone_and_only_during_discuss(stage: str) -> None:
+    """The author edits their own note, while the stage is DISCUSS. Nobody else edits it.
+
+    Not even the facilitator: rewriting another member's attributed note would
+    put words in a mouth that is not theirs, which is the one thing "always
+    attributed" rules out. Read-only once the stage is COMPLETE.
+    """
+    world = build(stage=stage, status=Status.CLOSED)
+    during_discuss = stage == Stage.DISCUSS
+    members_note = make_note(world, world.member)
+    facilitators_note = make_note(world, world.lead)
+
+    # Each author may edit their own, and only during DISCUSS.
+    assert can_edit_note(world.member, members_note) is during_discuss
+    assert can_edit_note(world.lead, facilitators_note) is during_discuss
+
+    # A note nobody-but-its-author may edit: not the facilitator, not another lead.
+    assert can_edit_note(world.lead, members_note) is False
+    assert can_edit_note(world.other_lead, members_note) is False
+    assert can_edit_note(world.outsider, members_note) is False
+    assert can_edit_note(world.superuser, members_note) is False
+    assert can_edit_note(world.anonymous, members_note) is False
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("stage", STAGE_ORDER)
+def test_deleting_a_note_is_the_author_or_this_cycles_facilitator_during_discuss(
+    stage: str,
+) -> None:
+    """The author or the cycle's facilitator, while the stage is DISCUSS.
+
+    Wider than editing — a facilitator working the agenda may clear any note,
+    even one they did not write — but bounded the same way in time: read-only for
+    everyone once the retrospective is COMPLETE. And it is per cycle: a facilitator
+    of the project who is not this week's facilitator may not.
+    """
+    world = build(stage=stage, status=Status.CLOSED)
+    during_discuss = stage == Stage.DISCUSS
+    members_note = make_note(world, world.member)
+
+    # The author deletes their own; this cycle's facilitator deletes any note.
+    assert can_delete_note(world.member, members_note) is during_discuss
+    assert can_delete_note(world.lead, members_note) is during_discuss
+
+    # A facilitator of the project who is not this cycle's facilitator, and the
+    # rest, never — at any stage.
+    assert can_delete_note(world.other_lead, members_note) is False
+    assert can_delete_note(world.outsider, members_note) is False
+    assert can_delete_note(world.superuser, members_note) is False
+    assert can_delete_note(world.anonymous, members_note) is False
 
 
 # --------------------------------------------------------------------------

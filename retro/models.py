@@ -310,3 +310,79 @@ class Vote(models.Model):
 
     def __str__(self) -> str:
         return f"{self.weight} vote(s) on {self.cluster_id} by {self.user_id}"
+
+
+class Note(models.Model):
+    """One attributed note, written during the DISCUSS stage of a retrospective.
+
+    Notes are #16's: once voting closes, the team works through the agenda while
+    anyone records notes that everyone sees. A note is free text — the structured
+    outcomes (decisions, action items) are #17's — and it is always attributed.
+
+    Attribution is the whole difference between a note and a card, and it is
+    correct here. `_docs/decisions.md` item 10 destroys authorship on cards and
+    forbids naming it, because a name on one card identifies the anonymous ones by
+    elimination. A note has no anonymous alternative: it is written in a live
+    discussion and is already attributable to whoever said it, so naming its
+    author eliminates nothing. Item 10 says so in as many words.
+
+    A note attaches to a `cluster` — the topic under discussion — or to nothing,
+    which is a note about the retrospective as a whole, which is why `cluster` is
+    nullable. It never reaches a `Card`: a note carries no card's author and no
+    card's `pk`, because it points at a cluster (an integer pk the whole team
+    made in front of the team) and at its own author, and at neither of the two
+    facts item 9 and item 10 keep off the board.
+
+    `created_at` orders the notes and nothing else: `board/serializers.py` sends
+    the author's display name and the text in this order, but never the timestamp
+    itself — a time on the board is one more thing a later feature could line up
+    against `Card.created_at`, so it stays on the row and off the wire.
+
+    `author` is CASCADE, like `Vote.user` and unlike `Card.author`. A note's
+    meaning is the attribution this row holds; a member who leaves takes their
+    notes with them rather than leaving a nameless note behind, which would be the
+    one thing "always attributed" says cannot exist. There is no anonymised
+    survival here, and item 3's irreversible anonymity is about `Card`, not this.
+    """
+
+    retrospective = models.ForeignKey(
+        Retrospective,
+        on_delete=models.CASCADE,
+        related_name="notes",
+    )
+    # Nullable: a note against the retrospective as a whole has no cluster. When a
+    # cluster is set it is resolved against this retrospective before the note is
+    # written, so the two can never point at different boards. CASCADE, though a
+    # cluster cannot in practice be deleted while a note points at it — clusters
+    # freeze at the `-> VOTE` transition and notes are only written from DISCUSS.
+    cluster = models.ForeignKey(
+        Cluster,
+        on_delete=models.CASCADE,
+        related_name="notes",
+        null=True,
+        blank=True,
+    )
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="notes",
+    )
+    text = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # `created_at` is the order notes appear in, `id` the tie-breaker so two
+        # notes written in the same instant still come back in a stable order
+        # from one poll to the next.
+        ordering: ClassVar[list[str]] = ["created_at", "id"]
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            # The endpoint rejects blank or whitespace-only text with a sentence;
+            # this is the same rule where an endpoint cannot be gone round.
+            models.CheckConstraint(
+                condition=~models.Q(text__regex=r"^\s*$"),
+                name="retro_note_text_not_blank",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Note by {self.author_id} on retrospective {self.retrospective_id}"

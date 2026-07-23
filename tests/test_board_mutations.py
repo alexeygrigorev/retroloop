@@ -445,6 +445,11 @@ def test_every_write_endpoint_in_the_urlconf_is_exercised() -> None:
         # rather than through this registry. This test guards #12's seven cluster
         # and card mutations, which is what `ACTIONS` covers.
         and not name.startswith("board-vote-")
+        # #16's discussion endpoints (`board-cluster-status`, `board-note-add`,
+        # `-edit`, `-delete`) are the DISCUSS stage's, exercised in
+        # `tests/test_discussion.py`, and are not part of #12's seven either.
+        and name != "board-cluster-status"
+        and not name.startswith("board-note-")
     }
 
     assert registered == {action.url_name for action in ACTIONS.values()}
