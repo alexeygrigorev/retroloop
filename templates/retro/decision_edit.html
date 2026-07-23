@@ -1,0 +1,31 @@
+{% extends "base_app.html" %}
+{% comment %}
+  Re-wording one decision. Only its author or the cycle's facilitator reaches
+  this page, and only while the retrospective is not complete — the view refuses
+  everyone else, so this form is never served to someone who could not save it.
+{% endcomment %}
+
+{% block title %}Edit a decision — week of {{ cycle.week_start|date:'j F Y' }}{% endblock %}
+
+{% block content %}
+  <h1 class="page-heading">Edit a decision</h1>
+  <p class="mt-2 text-sm text-slate-600">
+    <a href="{% url 'retro-outcomes' retro.pk %}" class="link">
+      Decisions and action items
+    </a>
+    for the week of {{ cycle.week_start|date:'j F Y' }}
+  </p>
+
+  <section class="panel mt-8">
+    <h2 class="section-heading">The decision</h2>
+    <form method="post" action="{{ request.path }}" class="form-fields">
+      {% csrf_token %}
+      {{ form.as_div }}
+      <button type="submit" class="btn-primary">Save the decision</button>
+    </form>
+  </section>
+
+  <p class="mt-6 text-sm">
+    <a href="{% url 'retro-outcomes' retro.pk %}" class="link">Back to the list</a>
+  </p>
+{% endblock %}

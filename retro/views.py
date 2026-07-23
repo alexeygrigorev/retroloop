@@ -8,6 +8,7 @@ turn its rejection into a response. No view assigns `stage`.
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.core.exceptions import PermissionDenied
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -16,9 +17,18 @@ from django.views.decorators.http import require_POST
 
 from cycles.models import Card, FeedbackCycle
 from meetings.services import upload_is_open
-from projects.permissions import can_advance_stage, can_upload_recording
+from projects.permissions import (
+    can_advance_stage,
+    can_delete_action_item,
+    can_delete_decision,
+    can_edit_action_item,
+    can_edit_decision,
+    can_update_action_item,
+    can_upload_recording,
+)
 from projects.views import member_or_404
-from retro.models import Retrospective
+from retro.forms import ActionItemForm, DecisionForm
+from retro.models import ActionItem, Decision, Retrospective
 from retro.services import (
     StageError,
     advance_stage,
@@ -168,3 +178,289 @@ def _stage_label(stage: str | None) -> str:
     if stage is None:
         return ""
     return Retrospective.Stage(stage).label
+
+
+# --------------------------------------------------------------------------
+# Decisions and action items — #17
+#
+# Server-rendered with HTMX-style POST-and-redirect, not part of the React board
+# island: these outcomes are not in `board_state`, so a change to one does not
+# touch `Retrospective.version` and never wakes an island poller to re-read a
+# board that has not changed. The version bump belongs to the board, and this is
+# a different surface.
+#
+# The views are thin. Who may act is `projects/permissions.py`, what the models
+# hold is `retro/models.py`, and what a form refuses is `retro/forms.py`; a
+# view's whole job is to find the row, refuse the people who may not see it,
+# validate, write, and redirect. The freeze at COMPLETE is not decided here — it
+# is `can_edit_*` returning False, which a text edit or delete asks and a status
+# flip does not.
+# --------------------------------------------------------------------------
+
+
+@login_required
+def retro_outcomes(request: HttpRequest, pk: int) -> HttpResponse:
+    """The decisions and action items of one retrospective, visible to members.
+
+    Every project member sees them, with each action item's owner, due date and
+    status, unassigned and overdue ones marked. The page also carries the two
+    forms for writing one by hand, which any member may do.
+    """
+    retro = _retro_for_member(request, pk)
+    return _render_outcomes(request, retro)
+
+
+@login_required
+@require_POST
+def decision_create(request: HttpRequest, pk: int) -> HttpResponse:
+    """Write one decision by hand. Any project member may.
+
+    `MANUAL` and `CONFIRMED` come from the model defaults — a person typing it is
+    the review step — and `created_by` from the session, so it can never be
+    written in another member's name.
+    """
+    retro = _retro_for_member(request, pk)
+    form = DecisionForm(request.POST, retrospective=retro)
+    if not form.is_valid():
+        return _render_outcomes(request, retro, decision_form=form, status=400)
+
+    decision = form.save(commit=False)
+    decision.retrospective = retro
+    decision.created_by = request.user
+    decision.save()
+    messages.success(request, "The decision has been recorded.")
+    return redirect("retro-outcomes", pk=retro.pk)
+
+
+@login_required
+def decision_edit(request: HttpRequest, pk: int) -> HttpResponse:
+    """Re-word one decision. Its author or the facilitator, while not COMPLETE."""
+    decision = get_object_or_404(
+        Decision.objects.select_related("retrospective__cycle__project"), pk=pk
+    )
+    retro = decision.retrospective
+    member_or_404(request.user, retro.cycle.project)
+    if not can_edit_decision(request.user, decision):
+        raise PermissionDenied(
+            "This decision is frozen, or is not yours to change. "
+            "After the retrospective is complete its text can no longer be edited."
+        )
+
+    if request.method != "POST":
+        form = DecisionForm(instance=decision, retrospective=retro)
+        return _render_decision_edit(request, decision, form)
+
+    form = DecisionForm(request.POST, instance=decision, retrospective=retro)
+    if not form.is_valid():
+        return _render_decision_edit(request, decision, form, status=400)
+
+    form.save()
+    messages.success(request, "The decision has been updated.")
+    return redirect("retro-outcomes", pk=retro.pk)
+
+
+@login_required
+@require_POST
+def decision_delete(request: HttpRequest, pk: int) -> HttpResponse:
+    """Remove one decision. Its author or the facilitator, while not COMPLETE."""
+    decision = get_object_or_404(
+        Decision.objects.select_related("retrospective__cycle__project"), pk=pk
+    )
+    retro = decision.retrospective
+    member_or_404(request.user, retro.cycle.project)
+    if not can_delete_decision(request.user, decision):
+        raise PermissionDenied(
+            "This decision is frozen, or is not yours to remove. "
+            "After the retrospective is complete it can no longer be deleted."
+        )
+
+    decision.delete()
+    messages.success(request, "The decision has been removed.")
+    return redirect("retro-outcomes", pk=retro.pk)
+
+
+@login_required
+@require_POST
+def action_item_create(request: HttpRequest, pk: int) -> HttpResponse:
+    """Write one action item by hand. Any project member may.
+
+    An owner has to be a member of the project or empty; the form refuses any
+    other value. An unassigned item is allowed and shown, not hidden.
+    """
+    retro = _retro_for_member(request, pk)
+    form = ActionItemForm(request.POST, retrospective=retro, project=retro.cycle.project)
+    if not form.is_valid():
+        return _render_outcomes(request, retro, action_item_form=form, status=400)
+
+    action = form.save(commit=False)
+    action.retrospective = retro
+    action.created_by = request.user
+    action.save()
+    messages.success(request, "The action item has been recorded.")
+    return redirect("retro-outcomes", pk=retro.pk)
+
+
+@login_required
+def action_item_edit(request: HttpRequest, pk: int) -> HttpResponse:
+    """Re-word one action item. Its author or the facilitator, while not COMPLETE.
+
+    This is the *text* — description, owner, due date. Ticking the item off is a
+    separate endpoint that stays open after COMPLETE.
+    """
+    action = get_object_or_404(
+        ActionItem.objects.select_related("retrospective__cycle__project", "owner"), pk=pk
+    )
+    retro = action.retrospective
+    member_or_404(request.user, retro.cycle.project)
+    if not can_edit_action_item(request.user, action):
+        raise PermissionDenied(
+            "This action item is frozen, or is not yours to change. "
+            "After the retrospective is complete its text can no longer be edited, "
+            "though it can still be ticked off."
+        )
+
+    if request.method != "POST":
+        form = ActionItemForm(instance=action, retrospective=retro, project=retro.cycle.project)
+        return _render_action_item_edit(request, action, form)
+
+    form = ActionItemForm(
+        request.POST, instance=action, retrospective=retro, project=retro.cycle.project
+    )
+    if not form.is_valid():
+        return _render_action_item_edit(request, action, form, status=400)
+
+    form.save()
+    messages.success(request, "The action item has been updated.")
+    return redirect("retro-outcomes", pk=retro.pk)
+
+
+@login_required
+@require_POST
+def action_item_delete(request: HttpRequest, pk: int) -> HttpResponse:
+    """Remove one action item. Its author or the facilitator, while not COMPLETE."""
+    action = get_object_or_404(
+        ActionItem.objects.select_related("retrospective__cycle__project"), pk=pk
+    )
+    retro = action.retrospective
+    member_or_404(request.user, retro.cycle.project)
+    if not can_delete_action_item(request.user, action):
+        raise PermissionDenied(
+            "This action item is frozen, or is not yours to remove. "
+            "After the retrospective is complete it can no longer be deleted."
+        )
+
+    action.delete()
+    messages.success(request, "The action item has been removed.")
+    return redirect("retro-outcomes", pk=retro.pk)
+
+
+@login_required
+@require_POST
+def action_item_toggle(request: HttpRequest, pk: int) -> HttpResponse:
+    """Flip one action item between OPEN and DONE. Its owner or the facilitator.
+
+    Allowed at every stage, COMPLETE included: the tick box outlives the
+    retrospective, because work agreed one week is finished in another. This is
+    the one thing that stays writable after the text is frozen.
+    """
+    action = get_object_or_404(
+        ActionItem.objects.select_related("retrospective__cycle__project", "owner"), pk=pk
+    )
+    retro = action.retrospective
+    member_or_404(request.user, retro.cycle.project)
+    if not can_update_action_item(request.user, action):
+        raise PermissionDenied(
+            "Only this action item's owner or the cycle's facilitator can tick it off."
+        )
+
+    action.status = (
+        ActionItem.Status.OPEN
+        if action.status == ActionItem.Status.DONE
+        else ActionItem.Status.DONE
+    )
+    action.save(update_fields=["status"])
+    messages.success(request, f"The action item is now {action.get_status_display().lower()}.")
+    return redirect("retro-outcomes", pk=retro.pk)
+
+
+# --------------------------------------------------------------------------
+# The parts the outcome views share
+# --------------------------------------------------------------------------
+
+
+def _retro_for_member(request: HttpRequest, pk: int) -> Retrospective:
+    """The retrospective, or the 404 a non-member earns — the same as an unused id."""
+    retro = get_object_or_404(
+        Retrospective.objects.select_related("cycle__project", "cycle__facilitator"), pk=pk
+    )
+    member_or_404(request.user, retro.cycle.project)
+    return retro
+
+
+def _decorated_action_items(request: HttpRequest, retro: Retrospective) -> list[ActionItem]:
+    """This retrospective's action items, each carrying the two per-viewer flags.
+
+    `can_edit` and `can_update` are attached here rather than computed in the
+    template, the same way `card_section` attaches `can_edit`/`can_delete`: the
+    template renders a control, and whether this viewer may use it is decided in
+    `projects/permissions.py`.
+    """
+    items = list(retro.action_items.select_related("owner"))
+    for item in items:
+        item.can_edit = can_edit_action_item(request.user, item)
+        item.can_update = can_update_action_item(request.user, item)
+    return items
+
+
+def _decorated_decisions(request: HttpRequest, retro: Retrospective) -> list[Decision]:
+    decisions = list(retro.decisions.all())
+    for decision in decisions:
+        decision.can_edit = can_edit_decision(request.user, decision)
+    return decisions
+
+
+def _render_outcomes(
+    request: HttpRequest,
+    retro: Retrospective,
+    *,
+    decision_form: DecisionForm | None = None,
+    action_item_form: ActionItemForm | None = None,
+    status: int = 200,
+) -> HttpResponse:
+    """The outcomes page, with fresh create forms unless a rejected one is passed back."""
+    project = retro.cycle.project
+    context = {
+        "retro": retro,
+        "cycle": retro.cycle,
+        "project": project,
+        "decisions": _decorated_decisions(request, retro),
+        "action_items": _decorated_action_items(request, retro),
+        "decision_form": decision_form or DecisionForm(retrospective=retro),
+        "action_item_form": action_item_form
+        or ActionItemForm(retrospective=retro, project=project),
+    }
+    return render(request, "retro/outcomes.html", context, status=status)
+
+
+def _render_decision_edit(
+    request: HttpRequest, decision: Decision, form: DecisionForm, status: int = 200
+) -> HttpResponse:
+    retro = decision.retrospective
+    return render(
+        request,
+        "retro/decision_edit.html",
+        {"retro": retro, "cycle": retro.cycle, "project": retro.cycle.project, "form": form},
+        status=status,
+    )
+
+
+def _render_action_item_edit(
+    request: HttpRequest, action: ActionItem, form: ActionItemForm, status: int = 200
+) -> HttpResponse:
+    retro = action.retrospective
+    return render(
+        request,
+        "retro/action_item_edit.html",
+        {"retro": retro, "cycle": retro.cycle, "project": retro.cycle.project, "form": form},
+        status=status,
+    )

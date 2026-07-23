@@ -46,10 +46,14 @@ from projects.permissions import (
     can_close_cycle,
     can_confirm_extraction,
     can_create_cluster,
+    can_delete_action_item,
     can_delete_card,
     can_delete_cluster,
+    can_delete_decision,
     can_delete_note,
+    can_edit_action_item,
     can_edit_card,
+    can_edit_decision,
     can_edit_note,
     can_merge_cluster,
     can_move_card,
@@ -60,12 +64,13 @@ from projects.permissions import (
     can_set_cluster_status,
     can_split_cluster,
     can_start_retrospective,
+    can_update_action_item,
     can_upload_recording,
     can_view_card,
     can_view_project,
     can_view_summary,
 )
-from retro.models import STAGE_ORDER, Cluster, Note, Retrospective
+from retro.models import STAGE_ORDER, ActionItem, Cluster, Decision, Note, Retrospective
 
 User = get_user_model()
 
@@ -149,6 +154,13 @@ class World:
         # facilitator) allowed to delete it, which is what makes the refusal tests
         # for every other person non-vacuous.
         self.note = None
+        # A decision and an action item exist on the same terms as a note — they
+        # hang off the retrospective. Both are the `lead`'s own work (`created_by`)
+        # and the action item is the `lead`'s to do (`owner`), so `lead` says yes
+        # to every #17 rule and the refusal tests for everyone else are
+        # non-vacuous.
+        self.decision = None
+        self.action = None
         if stage is not None:
             self.retro = Retrospective.objects.create(cycle=self.cycle, stage=stage)
             self.cluster = Cluster.objects.create(
@@ -159,6 +171,19 @@ class World:
                 cluster=self.cluster,
                 author=self.lead,
                 text="A point raised in the discussion",
+            )
+            self.decision = Decision.objects.create(
+                retrospective=self.retro,
+                cluster=self.cluster,
+                text="Adopt trunk-based development",
+                created_by=self.lead,
+            )
+            self.action = ActionItem.objects.create(
+                retrospective=self.retro,
+                cluster=self.cluster,
+                description="Write the migration guide",
+                owner=self.lead,
+                created_by=self.lead,
             )
 
         self.refresh()
@@ -180,6 +205,14 @@ class World:
             self.note = Note.objects.select_related("retrospective__cycle__project", "author").get(
                 pk=self.note.pk
             )
+        if self.decision is not None:
+            self.decision = Decision.objects.select_related("retrospective__cycle__project").get(
+                pk=self.decision.pk
+            )
+        if self.action is not None:
+            self.action = ActionItem.objects.select_related(
+                "retrospective__cycle__project", "owner"
+            ).get(pk=self.action.pk)
 
     def obj(self, kind: str):
         return {
@@ -189,6 +222,8 @@ class World:
             "retro": self.retro,
             "cluster": self.cluster,
             "note": self.note,
+            "decision": self.decision,
+            "action": self.action,
         }[kind]
 
 
@@ -282,6 +317,21 @@ RULES: dict[str, Rule] = {
     ),
     "can_delete_note": Rule(
         can_delete_note, "note", stage=Stage.DISCUSS, status=Status.CLOSED, member=False
+    ),
+    "can_edit_decision": Rule(
+        can_edit_decision, "decision", stage=Stage.DISCUSS, status=Status.CLOSED, member=False
+    ),
+    "can_delete_decision": Rule(
+        can_delete_decision, "decision", stage=Stage.DISCUSS, status=Status.CLOSED, member=False
+    ),
+    "can_edit_action_item": Rule(
+        can_edit_action_item, "action", stage=Stage.DISCUSS, status=Status.CLOSED, member=False
+    ),
+    "can_delete_action_item": Rule(
+        can_delete_action_item, "action", stage=Stage.DISCUSS, status=Status.CLOSED, member=False
+    ),
+    "can_update_action_item": Rule(
+        can_update_action_item, "action", stage=Stage.DISCUSS, status=Status.CLOSED, member=False
     ),
     "can_upload_recording": Rule(
         can_upload_recording, "retro", stage=Stage.DISCUSS, status=Status.CLOSED, member=False
@@ -879,6 +929,125 @@ def test_deleting_a_note_is_the_author_or_this_cycles_facilitator_during_discuss
     assert can_delete_note(world.outsider, members_note) is False
     assert can_delete_note(world.superuser, members_note) is False
     assert can_delete_note(world.anonymous, members_note) is False
+
+
+# --------------------------------------------------------------------------
+# Decisions and action items — #17
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("stage", STAGE_ORDER)
+def test_editing_a_decision_is_the_author_or_facilitator_until_complete(stage: str) -> None:
+    """The decision's author or this cycle's facilitator, while it is not COMPLETE.
+
+    Text is frozen once the retrospective is complete, so the stage is part of the
+    answer — the same shape as `can_edit_note`. Delete answers exactly as edit.
+    """
+    world = build(stage=stage, status=Status.CLOSED)
+    before_complete = stage != Stage.COMPLETE
+    members_decision = Decision.objects.create(
+        retrospective=world.retro, text="Adopt trunk-based development", created_by=world.member
+    )
+
+    # The author edits and deletes their own, and only before COMPLETE.
+    assert can_edit_decision(world.member, members_decision) is before_complete
+    assert can_delete_decision(world.member, members_decision) is before_complete
+    # This cycle's facilitator may too, and only before COMPLETE.
+    assert can_edit_decision(world.lead, members_decision) is before_complete
+    assert can_delete_decision(world.lead, members_decision) is before_complete
+    # A facilitator of the project who is not this week's, and everyone else, never.
+    assert can_edit_decision(world.other_lead, members_decision) is False
+    assert can_edit_decision(world.outsider, members_decision) is False
+    assert can_edit_decision(world.superuser, members_decision) is False
+    assert can_edit_decision(world.anonymous, members_decision) is False
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("stage", STAGE_ORDER)
+def test_editing_an_action_items_text_is_the_author_or_facilitator_until_complete(
+    stage: str,
+) -> None:
+    """The description — not the tick box — is the author's or facilitator's, until COMPLETE."""
+    world = build(stage=stage, status=Status.CLOSED)
+    before_complete = stage != Stage.COMPLETE
+    members_action = ActionItem.objects.create(
+        retrospective=world.retro, description="Write the runbook", created_by=world.member
+    )
+
+    assert can_edit_action_item(world.member, members_action) is before_complete
+    assert can_delete_action_item(world.member, members_action) is before_complete
+    assert can_edit_action_item(world.lead, members_action) is before_complete
+    assert can_delete_action_item(world.lead, members_action) is before_complete
+    assert can_edit_action_item(world.other_lead, members_action) is False
+    assert can_edit_action_item(world.outsider, members_action) is False
+    assert can_edit_action_item(world.superuser, members_action) is False
+    assert can_edit_action_item(world.anonymous, members_action) is False
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("stage", STAGE_ORDER)
+def test_ticking_an_action_item_is_its_owner_or_the_facilitator_at_every_stage(
+    stage: str,
+) -> None:
+    """Flipping OPEN/DONE is the owner's or the facilitator's — at every stage, COMPLETE included.
+
+    Unlike editing the text, the tick box does not close at COMPLETE: work agreed
+    one week is finished in another. The predicate answers *who*, so it is True for
+    the owner and the facilitator at every stage, and False for everyone else.
+    """
+    world = build(stage=stage, status=Status.CLOSED)
+    members_action = ActionItem.objects.create(
+        retrospective=world.retro, description="Write the runbook", owner=world.member
+    )
+
+    # The owner ticks their own; this cycle's facilitator ticks any — at every stage.
+    assert can_update_action_item(world.member, members_action) is True
+    assert can_update_action_item(world.lead, members_action) is True
+    # Nobody else: a facilitator of the project who is not this week's, and the rest.
+    assert can_update_action_item(world.other_lead, members_action) is False
+    assert can_update_action_item(world.outsider, members_action) is False
+    assert can_update_action_item(world.superuser, members_action) is False
+    assert can_update_action_item(world.anonymous, members_action) is False
+
+
+@pytest.mark.django_db
+def test_an_unassigned_action_item_is_only_the_facilitators_to_tick() -> None:
+    """An item with no owner is nobody's to tick but this cycle's facilitator's."""
+    world = build(stage=Stage.DISCUSS, status=Status.CLOSED)
+    orphan = ActionItem.objects.create(
+        retrospective=world.retro, description="Nobody's yet", owner=None
+    )
+
+    assert can_update_action_item(world.lead, orphan) is True
+    assert can_update_action_item(world.member, orphan) is False
+    assert can_update_action_item(world.other_lead, orphan) is False
+
+
+@pytest.mark.django_db
+def test_the_frozen_after_complete_boundary_freezes_text_but_not_the_tick_box() -> None:
+    """At COMPLETE the text is read-only and the tick box is not — stated as one assertion set.
+
+    A status change is allowed after COMPLETE; a text edit or a delete is not.
+    Both halves are proved against the same complete retrospective, and against a
+    live one where the text is still editable, so "frozen except this one field"
+    cannot pass as "frozen".
+    """
+    complete = build(stage=Stage.COMPLETE, status=Status.CLOSED)
+
+    # Text: frozen for the author and the facilitator alike.
+    assert can_edit_decision(complete.lead, complete.decision) is False
+    assert can_delete_decision(complete.lead, complete.decision) is False
+    assert can_edit_action_item(complete.lead, complete.action) is False
+    assert can_delete_action_item(complete.lead, complete.action) is False
+    # The tick box: still the owner's and the facilitator's.
+    assert can_update_action_item(complete.lead, complete.action) is True
+
+    # And before COMPLETE the text is editable, so the freeze is what closed it.
+    live = build(stage=Stage.DISCUSS, status=Status.CLOSED)
+    assert can_edit_decision(live.lead, live.decision) is True
+    assert can_edit_action_item(live.lead, live.action) is True
+    assert can_update_action_item(live.lead, live.action) is True
 
 
 # --------------------------------------------------------------------------

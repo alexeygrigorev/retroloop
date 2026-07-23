@@ -1,0 +1,32 @@
+{% extends "base_app.html" %}
+{% comment %}
+  Re-wording one action item — its description, owner and due date. Only its
+  author or the cycle's facilitator reaches this page, and only while the
+  retrospective is not complete. Ticking the item off is a different control, on
+  the list, and stays open after the retrospective is complete.
+{% endcomment %}
+
+{% block title %}Edit an action item — week of {{ cycle.week_start|date:'j F Y' }}{% endblock %}
+
+{% block content %}
+  <h1 class="page-heading">Edit an action item</h1>
+  <p class="mt-2 text-sm text-slate-600">
+    <a href="{% url 'retro-outcomes' retro.pk %}" class="link">
+      Decisions and action items
+    </a>
+    for the week of {{ cycle.week_start|date:'j F Y' }}
+  </p>
+
+  <section class="panel mt-8">
+    <h2 class="section-heading">The action item</h2>
+    <form method="post" action="{{ request.path }}" class="form-fields">
+      {% csrf_token %}
+      {{ form.as_div }}
+      <button type="submit" class="btn-primary">Save the action item</button>
+    </form>
+  </section>
+
+  <p class="mt-6 text-sm">
+    <a href="{% url 'retro-outcomes' retro.pk %}" class="link">Back to the list</a>
+  </p>
+{% endblock %}

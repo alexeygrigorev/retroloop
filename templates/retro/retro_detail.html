@@ -148,6 +148,15 @@
   {% endif %}
 
   <p class="mt-6 text-sm">
+    {% comment %}
+      Every project member reaches the decisions and action items from here.
+      The page itself refuses a non-member, so this is a way in and not what
+      guards it.
+    {% endcomment %}
+    <a href="{% url 'retro-outcomes' retro.pk %}" class="link">Decisions and action items</a>
+  </p>
+
+  <p class="mt-6 text-sm">
     <a href="{{ cycle.get_absolute_url }}" class="link">Back to the week</a>
   </p>
 {% endblock %}
