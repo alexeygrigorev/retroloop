@@ -50,9 +50,7 @@ Stage = Retrospective.Stage
 
 
 def make_user(username: str, display_name: str) -> User:
-    return User.objects.create_user(
-        username=username, password=PASSWORD, display_name=display_name
-    )
+    return User.objects.create_user(username=username, password=PASSWORD, display_name=display_name)
 
 
 def make_project(owner: User) -> Project:
@@ -133,7 +131,9 @@ def test_a_member_sees_the_dashboard() -> None:
 @pytest.mark.django_db
 def test_a_non_member_gets_404_and_no_hint_the_project_exists() -> None:
     owner = make_user("owner", "Olive Owner")
-    outsider = make_user("outsider", "Nina Nonmember")
+    make_user(
+        "outsider", "Nina Nonmember"
+    )  # created so as_user("outsider") resolves; not referenced
     project = make_project(owner)
 
     response = as_user("outsider").get(dashboard_url(project))
@@ -397,7 +397,9 @@ def test_only_the_owner_or_facilitator_can_tick_an_item_off() -> None:
 @pytest.mark.django_db
 def test_a_non_member_cannot_toggle_and_is_told_nothing() -> None:
     owner = make_user("owner", "Olive Owner")
-    outsider = make_user("outsider", "Nina Nonmember")
+    make_user(
+        "outsider", "Nina Nonmember"
+    )  # created so as_user("outsider") resolves; not referenced
     project = make_project(owner)
     retro = make_retro(make_cycle(project, owner, week=0))
     action = make_action(retro, description="Not yours.", owner=owner)
@@ -459,9 +461,7 @@ def _build_project(name: str, owner: User, member: User, *, cycles: int) -> Proj
         make_action(retro, description=f"Item {index}a", owner=owner)
         make_action(retro, description=f"Item {index}b", owner=member, due_date=date(2020, 1, 1))
     # One open cycle, so the submission-status query runs in both projects.
-    open_cycle = make_cycle(
-        project, owner, week=cycles + 1, status=FeedbackCycle.Status.COLLECTING
-    )
+    open_cycle = make_cycle(project, owner, week=cycles + 1, status=FeedbackCycle.Status.COLLECTING)
     Card.objects.create(
         cycle=open_cycle, category=Card.Category.START, text="A card.", author=member
     )
