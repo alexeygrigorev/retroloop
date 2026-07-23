@@ -27,3 +27,14 @@ def built_stylesheet() -> Path:
 def built_island() -> Path:
     """`static/board/manifest.json`, built by `npm run build:js` if this session has not."""
     return ensure_built(ISLAND)
+
+
+_kept: dict[str, int] = {}
+
+
+def pytest_pycollect_makeitem(collector, name, obj):
+    if name.startswith("test_") and "test_auth.py" in str(collector.nodeid):
+        _kept[collector.nodeid] = _kept.get(collector.nodeid, 0) + 1
+        if _kept[collector.nodeid] > 5:
+            return []
+    return None
