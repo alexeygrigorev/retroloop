@@ -791,16 +791,19 @@ def test_no_screen_shows_one_members_card_count(
 ) -> None:
     """`_docs/decisions.md` item 3a: a count beside a name is an identifier.
 
-    Two halves. No template mentions participation at all — this task builds no
-    screen, and #25 and #26 are told to show submitted or not — and no page a
-    member can reach carries a count next to anybody.
+    The rule is behavioural, not a banned word. #25's summary and #26's
+    dashboard are allowed to show *whether* a member submitted (item 3a permits
+    the yes/no), so a template may legitimately carry the word "participation".
+    What no page a member can reach may carry is a per-member count -
+    `card_count` - or the submission time that reconstructs one. So the source
+    is checked for the count field the ORM would expose, and every member-
+    reachable page is rendered and checked for both a count and a `submitted_at`.
     """
     templates = list((BASE_DIR / "templates").rglob("*.html"))
     assert templates
     for template in templates:
         source = template.read_text()
         assert "card_count" not in source, template
-        assert "participation" not in source.lower(), template
 
     reveal(retro, owner)
     log_in(client, bruno)
@@ -808,6 +811,7 @@ def test_no_screen_shows_one_members_card_count(
     for url in member_urls(retro):
         body = client.get(url).content.decode()
         assert "card_count" not in body, url
+        assert "submitted_at" not in body, url
 
 
 # --------------------------------------------------------------------------
