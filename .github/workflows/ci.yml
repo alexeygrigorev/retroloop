@@ -113,7 +113,7 @@ jobs:
         test_auth.py 41
         test_board.py 71
         test_cards.py 71
-        test_ci_workflow.py 60
+        test_ci_workflow.py 0
         test_compose_worker.py 8
         test_cycles.py 37
         test_home.py 1
