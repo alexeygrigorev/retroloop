@@ -124,6 +124,34 @@ def completion(clusters) -> FakeCompletion:
     return FakeCompletion(json.dumps({"clusters": clusters}))
 
 
+def _walk_values(obj):
+    """Every scalar value in a parsed JSON structure, at any depth.
+
+    Used to assert a property of the *values* — no card pk is one of them —
+    rather than of the serialized bytes, so a decimal that is a substring of a
+    hex UUID cannot trip it and a pk hidden in a field cannot slip past it.
+    """
+    if isinstance(obj, dict):
+        for value in obj.values():
+            yield from _walk_values(value)
+    elif isinstance(obj, list | tuple):
+        for item in obj:
+            yield from _walk_values(item)
+    else:
+        yield obj
+
+
+def _walk_keys(obj):
+    """Every dict key in a parsed JSON structure, at any depth."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            yield key
+            yield from _walk_keys(value)
+    elif isinstance(obj, list | tuple):
+        for item in obj:
+            yield from _walk_keys(item)
+
+
 class ScriptedClusteringClient:
     """A clustering client whose answer a test writes out.
 
@@ -613,12 +641,30 @@ def test_the_request_carries_public_ids_and_never_a_pk_or_an_author(four_cards: 
 
     body = sdk.calls[0]["messages"][-1]["content"]
     payload = json.loads(body)
+
+    # Structural, never a substring of the serialized bytes: a decimal pk can be
+    # a substring of a hex UUID by luck (which reds a substring check at random),
+    # and a pk that leaked in a field whose digits happened not to recur
+    # elsewhere would slip a substring check silently. So the parsed request is
+    # walked and its values and keys are compared, not its text.
     sent_ids = [card["id"] for card in payload["cards"]]
     assert sorted(sent_ids) == sorted(public_ids)
+    # Every card is exactly the three public fields — nothing that could carry a
+    # person rides along in a fourth key.
+    assert all(set(card) == {"id", "category", "text"} for card in payload["cards"])
+
+    values = set(_walk_values(payload))
+    keys = set(_walk_keys(payload))
     for card in four_cards.cards:
-        assert str(card.pk) not in body
-    assert "author" not in body
-    assert "is_anonymous" not in body
+        # No pk appears anywhere, as an int or as a string, at any depth.
+        assert card.pk not in values
+        assert str(card.pk) not in values
+        # And its author's pk does not either.
+        assert card.author_id not in values
+        assert str(card.author_id) not in values
+    # No field naming an author or the anonymity partition, anywhere.
+    assert keys.isdisjoint({"author", "author_id", "is_anonymous"})
+
     # And the cluster the pipeline wrote names no person: it carries only the
     # board fields, and the cards it grouped kept their own authors untouched.
     cluster = Cluster.objects.get(retrospective=four_cards.retro)
