@@ -172,14 +172,17 @@ def _roster(retro: Retrospective) -> list[tuple[str, int]]:
 
     The name is the display name, or the username where there is none — exactly
     `str(User)` — and never an email address (item 8: there are none) or a
-    username where a display name exists (#23). Ordered by user id so the same
-    roster is sent from one run to the next, and so `resolve_owner`'s ambiguity
-    check sees the same entries in the same order.
+    username where a display name exists (#23). Ordered by username, which is
+    unique, so the same roster is sent from one run to the next and
+    `resolve_owner`'s ambiguity check sees the same entries in the same order.
+    The order is a member fact and never a card's: it is by `username`, not by a
+    creation order, so nothing here recovers the submission order the reveal
+    destroyed (`_docs/decisions.md` item 9).
     """
     members = (
         get_user_model()
         .objects.filter(memberships__project=retro.cycle.project_id)
-        .order_by("id")
+        .order_by("username")
         .values_list("display_name", "username", "pk")
     )
     return [(display_name or username, pk) for display_name, username, pk in members]
