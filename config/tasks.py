@@ -147,3 +147,31 @@ def cluster_retrospective(retro_id: int) -> None:
     from retro.clustering import cluster_retrospective_cards
 
     cluster_retrospective_cards(retro_id)
+
+
+@task()
+def extract_meeting_outcomes(record_id: int) -> None:
+    """Read a stored transcript into draft outcomes. Enqueued by #21's pipeline.
+
+    The work is `meetings.extraction.extract_meeting_outcomes`: it builds the
+    model's input from the transcript, the ranked agenda and the roster, writes
+    the decisions and action items as `EXTRACTED`/`DRAFT` rows and the summary
+    onto the retrospective, and finishes the record READY (or FAILED, keeping the
+    transcript for a retry).
+
+    It takes an id and re-fetches, per the conventions above. Time passes between
+    the enqueue and the run, so the record may be gone or already moved on, and
+    either is a return rather than an error.
+
+    Enqueued by the pipeline's transcript store on commit
+    (`meetings/pipeline.py`), so it runs on the committed, durable transcript —
+    the recording is already deleted by then (`_docs/decisions.md` item 6), which
+    is exactly why this one *is* retryable where transcription is not. Nothing
+    retries it automatically; a facilitator re-runs it.
+    """
+    # Imported here rather than at module scope, for the same reason the two jobs
+    # above import lazily: this module is imported for `enqueue_on_commit` while
+    # the app registry is still loading.
+    from meetings.extraction import extract_meeting_outcomes as run_extraction
+
+    run_extraction(record_id)

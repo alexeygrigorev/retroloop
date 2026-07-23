@@ -1029,11 +1029,16 @@ def test_nothing_retries_the_job_itself() -> None:
     After the `finally` the recording is gone, so a queue-level retry could only
     fail differently. AGENTS.md says so, `config/tasks.py` says so, and this
     asserts the pipeline is not quietly arranging one of its own.
+
+    Chaining to the *next* stage is a different thing and is allowed: the store
+    enqueues #23's extraction on commit, exactly as #22's reveal enqueues
+    clustering. What the pipeline never does is re-enqueue its own job — that is
+    the self-retry this test forbids.
     """
     source = (BASE_DIR / "meetings" / "pipeline.py").read_text()
 
     assert ".enqueue(" not in source
-    assert "enqueue_on_commit" not in source
+    assert "enqueue_on_commit(process_meeting_record" not in source
     # The delete is the last thing the run does, and the retry is upstream of it.
     assert source.index("transcribe_chunks(chunks") < source.index("def _discard_media")
 

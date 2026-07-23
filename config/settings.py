@@ -193,4 +193,10 @@ TRANSCRIPTION_CLIENT = "ai.transcription.OpenAITranscriptionClient"
 # inert stand-in in `ai.fakes` so the suite runs with no key and no network.
 CLUSTERING_CLIENT = "ai.clustering.OpenAIClusteringClient"
 
+# Which client the extraction job builds, on the same terms as the two above: a
+# structural fact, not a per-deployment tune, so a dotted path rather than an env
+# var. `config/settings_test.py` points it at an inert stand-in in `ai.fakes` so
+# the suite runs with no key and no network.
+EXTRACTION_CLIENT = "ai.extraction.OpenAIExtractionClient"
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

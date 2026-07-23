@@ -19,6 +19,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from ai.clustering import CardInput
+from ai.extraction import ExtractionInput
 from ai.transcription import ChunkTranscript, Segment
 
 #: What the fake says, per chunk. Two speakers, so the stitching and the
@@ -93,3 +94,54 @@ class EchoClusteringClient:
             {"name": f"{category.title()} cards", "card_ids": ids}
             for category, ids in by_category.items()
         ]
+
+
+class NullExtractionClient:
+    """Extract nothing at all, for any transcript.
+
+    This is the suite's default (`config/settings_test.py`), and inert for the
+    same reason `NullClusteringClient` is: extraction is enqueued after every
+    transcription, and a stand-in that invented decisions and action items would
+    write draft rows under every fixture that runs the meeting pipeline. The
+    suite's default therefore extracts nothing, and the extraction tests inject a
+    client that does — a scripted one, or the real client driven by a fake SDK.
+
+    It also lets a keyless Compose stack take a meeting all the way to READY
+    without a key and without a network: the job runs, finds no outcomes, writes
+    no drafts, and finishes the record, which is a valid outcome and not a
+    failure — a meeting where nothing was decided.
+    """
+
+    def extract(self, meeting: ExtractionInput) -> dict:
+        return {"summary": "", "decisions": [], "action_items": []}
+
+
+class EchoExtractionClient:
+    """Return one deterministic decision naming the meeting, needing no key.
+
+    Deterministic on purpose, so a keyless Compose stack can watch a draft appear
+    end to end and a test can assert the exact text. It reads only the fields the
+    real request carries — the transcript and the roster — and never a card, an
+    author or a pk, because none of those reaches an extraction client in the
+    first place (`_docs/decisions.md` items 9 and 10). The owner it names is the
+    first roster entry, so the owner-resolution path has something real to match;
+    it invents no date.
+    """
+
+    def extract(self, meeting: ExtractionInput) -> dict:
+        owner = meeting.roster[0] if meeting.roster else None
+        excerpt = meeting.transcript.strip().splitlines()[0] if meeting.transcript.strip() else ""
+        return {
+            "summary": "The team met and agreed some follow-ups.",
+            "decisions": [
+                {"text": "The team reviewed the meeting.", "excerpt": excerpt},
+            ],
+            "action_items": [
+                {
+                    "description": "Follow up on the discussion.",
+                    "owner": owner,
+                    "due_date": None,
+                    "excerpt": excerpt,
+                },
+            ],
+        }

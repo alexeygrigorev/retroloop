@@ -62,6 +62,7 @@ from ai.transcription import (
     build_client,
     transcribe_chunks,
 )
+from config.tasks import enqueue_on_commit, extract_meeting_outcomes
 from meetings.locks import media_lock
 from meetings.models import MeetingRecord, Transcript
 
@@ -251,9 +252,12 @@ def _store(record: MeetingRecord, transcription: Transcription) -> None:
     row was put back to UPLOADED should end with one transcript, not two, and
     the one-to-one would refuse the second anyway.
 
-    The next stage is EXTRACTING, which is where #23 picks it up. Until that
-    lands a record stops there, with its transcript stored — the meeting is
-    safe, which is the part that cannot be redone later.
+    The next stage is EXTRACTING, and #23's extraction job is enqueued on commit
+    to carry the record on from there. It runs on the committed, durable
+    transcript — the recording is deleted in the `finally` below, but extraction
+    never needs it (`_docs/decisions.md` item 6), which is why it is retryable
+    where transcription is not. `enqueue_on_commit` (#18) keeps the worker from
+    claiming the job before the transcript it reads has committed.
     """
     Transcript.objects.update_or_create(
         record=record,
@@ -266,6 +270,7 @@ def _store(record: MeetingRecord, transcription: Transcription) -> None:
     record.status = MeetingRecord.Status.EXTRACTING
     record.error_message = ""
     record.save(update_fields=["status", "error_message"])
+    enqueue_on_commit(extract_meeting_outcomes, record.pk)
     logger.info(
         "meeting record %s transcribed: %s characters, %s chunk(s), %s speaker(s)",
         record.pk,
