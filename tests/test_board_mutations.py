@@ -437,7 +437,14 @@ def test_every_write_endpoint_in_the_urlconf_is_exercised() -> None:
     registered = {
         name
         for name in get_resolver().reverse_dict
-        if isinstance(name, str) and name.startswith("board-") and name != "board-state"
+        if isinstance(name, str)
+        and name.startswith("board-")
+        and name != "board-state"
+        # #15's voting endpoints (`board-vote-cast`, `-withdraw`, `-progress`)
+        # are writes and a read of their own, exercised in `tests/test_votes.py`
+        # rather than through this registry. This test guards #12's seven cluster
+        # and card mutations, which is what `ACTIONS` covers.
+        and not name.startswith("board-vote-")
     }
 
     assert registered == {action.url_name for action in ACTIONS.values()}
