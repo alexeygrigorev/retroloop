@@ -743,14 +743,22 @@ def test_the_retrospective_and_the_cycle_keep_their_integer_ids(
 def test_the_payload_gains_no_key_and_loses_none(
     client: Client, retro: Retrospective, ada: User, board: list[Card]
 ) -> None:
-    """Only the type of `cards[].id` changed. Everything else is #11's shape."""
+    """The type of `cards[].id` changed here; `cards[].mine` was added by #75.
+
+    Still an exact key set, not a subset: a stray key on a card fails this as
+    loudly as a missing one. The `mine` boolean is the viewer's own-card mark
+    (`_docs/decisions.md` item 10); the bootstrap deliberately does not carry it,
+    since the first poll from the state endpoint replaces the bootstrap with a
+    body that does.
+    """
     log_in(client, ada)
 
     state = get_state(client, retro).json()
     bootstrap = bootstrap_of(get_page(client, retro).content.decode())
 
     assert set(state) == {"id", "stage", "version", "changed", "cards", "clusters", "votes"}
-    assert all(set(card) == {"id", "category", "text", "cluster"} for card in state["cards"])
+    state_card_keys = {"id", "category", "text", "cluster", "mine"}
+    assert all(set(card) == state_card_keys for card in state["cards"])
     assert set(bootstrap) == {"id", "stage", "version", "cards"}
     assert all(set(card) == {"id", "category", "text"} for card in bootstrap["cards"])
 

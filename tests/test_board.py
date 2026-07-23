@@ -389,12 +389,17 @@ def test_a_member_gets_the_documented_payload_before_reveal(
                 "category": "START",
                 "text": ADA_OPEN_TEXT,
                 "cluster": None,
+                # Ada wrote it and did not mark it anonymous.
+                "mine": True,
             },
             {
                 "id": str(board["ada_secret"].public_id),
                 "category": "CONTINUE",
                 "text": ADA_SECRET_TEXT,
                 "cluster": None,
+                # Ada wrote it, but marked it anonymous — false even now, while
+                # `author` still names her.
+                "mine": False,
             },
         ],
         "clusters": [],
@@ -419,6 +424,13 @@ def test_a_member_gets_the_documented_payload_from_reveal(
     )
     log_in(client, ada)
 
+    # The only card that is Ada's own and not anonymous. `ada_secret` is hers
+    # too but she marked it anonymous, so it is `false` even though this is the
+    # exact permutation the reveal shuffled it into. Stated as a literal set
+    # rather than as the serializer's own expression, so the assertion cannot
+    # agree with the code by sharing a bug with it.
+    ada_mine = {str(board["ada_open"].public_id)}
+
     response = get_state(client, retro)
 
     assert response.json() == {
@@ -432,6 +444,7 @@ def test_a_member_gets_the_documented_payload_from_reveal(
                 "category": card.category,
                 "text": card.text,
                 "cluster": None,
+                "mine": str(card.public_id) in ada_mine,
             }
             for card in ordered
         ],
@@ -816,6 +829,181 @@ def test_the_viewers_own_votes_and_budget_are_in_the_payload(
     payload = get_state(client, retro).json()
 
     assert payload["votes"] == {"mine": [], "remaining": retro.votes_per_member}
+
+
+# --------------------------------------------------------------------------
+# B2. The own-card mark — `mine`
+#
+# `_docs/decisions.md` item 10: the one person-fact the board may carry, and
+# only ever about the viewer themselves. True for the viewer's own cards they
+# did not mark anonymous, false for everything else — another member's card and
+# the viewer's own anonymous card alike, with no way to tell those two apart.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_mine_does_not_change_across_the_reveal(
+    client: Client, retro: Retrospective, ada: User, owner: User, board: dict[str, Card]
+) -> None:
+    """The value for a given card and viewer is the same on both sides of REVEAL.
+
+    Captured before the reveal — where Ada sees only her own two cards, one
+    attributed and one anonymous — and again after it, and compared per card.
+    The anonymous case is the one that could drift: item 3 nulls its author at
+    the reveal, so the `false` has to come from `is_anonymous` before and from
+    the nulled author after, and land on the same value.
+    """
+    log_in(client, ada)
+
+    before = {card["id"]: card["mine"] for card in get_state(client, retro).json()["cards"]}
+    assert before == {
+        str(board["ada_open"].public_id): True,
+        str(board["ada_secret"].public_id): False,
+    }
+
+    advance_to(retro, owner, Stage.REVEAL)
+
+    after = {card["id"]: card["mine"] for card in get_state(client, retro).json()["cards"]}
+    for card_id, value in before.items():
+        assert after[card_id] == value, card_id
+
+    # Named for emphasis: the anonymous card's author is gone now, and `mine` is
+    # still the same false; the attributed one is still true.
+    assert after[str(board["ada_secret"].public_id)] is False
+    assert after[str(board["ada_open"].public_id)] is True
+
+
+@pytest.mark.django_db
+def test_from_reveal_bodies_differ_only_in_mine_and_each_marks_its_owner(
+    client: Client,
+    retro: Retrospective,
+    ada: User,
+    bruno: User,
+    owner: User,
+    board: dict[str, Card],
+) -> None:
+    """Three viewers on a board several people wrote, from REVEAL.
+
+    Each one's true set is exactly the cards they wrote and did not mark
+    anonymous — so no viewer's own anonymous card is marked, and nobody's mark
+    lands on anybody else's card. And the bodies are otherwise identical: strip
+    `mine` and the three are byte-for-byte the same board, which is what makes
+    `mine` the *only* thing that varies between viewers.
+    """
+    advance_to(retro, owner, Stage.REVEAL)
+
+    true_sets = {
+        ada: {str(board["ada_open"].public_id)},
+        bruno: {str(board["bruno_open"].public_id)},
+        owner: {str(board["owner_open"].public_id)},
+    }
+
+    bodies: dict[User, dict] = {}
+    raw: dict[User, str] = {}
+    for viewer in true_sets:
+        log_in(client, viewer)
+        response = get_state(client, retro)
+        bodies[viewer] = response.json()
+        raw[viewer] = body_of(response)
+
+    for viewer, expected in true_sets.items():
+        marked = {card["id"] for card in bodies[viewer]["cards"] if card["mine"]}
+        assert marked == expected, viewer.username
+
+    def without_mine(body: dict) -> dict:
+        cards = [
+            {key: value for key, value in card.items() if key != "mine"} for card in body["cards"]
+        ]
+        return {**body, "cards": cards}
+
+    stripped = [without_mine(bodies[viewer]) for viewer in true_sets]
+    assert stripped[0] == stripped[1] == stripped[2]
+
+    # And `mine` really did vary: the raw bodies are not all identical, so the
+    # thing that stays constant above is constant despite a real difference.
+    assert len(set(raw.values())) == len(true_sets)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("stage", ALL_STAGES)
+def test_no_key_lets_a_client_tell_an_anonymous_card_from_an_attributed_one(
+    client: Client,
+    retro: Retrospective,
+    ada: User,
+    owner: User,
+    board: dict[str, Card],
+    stage: str,
+) -> None:
+    """No `is_anonymous`, and no other key that partitions the cards by anonymity.
+
+    `mine` is the only person-shaped fact, and it is a plain boolean about the
+    viewer. Nothing in the body says "this card was written anonymously".
+    """
+    advance_to(retro, owner, stage)
+    log_in(client, ada)
+
+    response = get_state(client, retro)
+    payload = response.json()
+
+    for key in keys_in(payload):
+        assert "anon" not in key.lower(), key
+    assert "is_anonymous" not in body_of(response)
+
+    for card in payload["cards"]:
+        assert isinstance(card["mine"], bool)
+
+
+@pytest.mark.django_db
+def test_an_own_anonymous_card_is_indistinguishable_from_someone_elses(
+    client: Client, retro: Retrospective, ada: User, owner: User, board: dict[str, Card]
+) -> None:
+    """The two `false` cases are the same shape: own-anonymous and another member's.
+
+    From REVEAL Ada sees both her own anonymous card and Bruno's attributed one.
+    Both are `mine: false`, and their key sets are identical — the body gives no
+    way to tell "I wrote this anonymously" from "somebody else wrote this".
+    """
+    advance_to(retro, owner, Stage.REVEAL)
+    log_in(client, ada)
+
+    cards = {card["id"]: card for card in get_state(client, retro).json()["cards"]}
+    own_anonymous = cards[str(board["ada_secret"].public_id)]
+    someone_elses = cards[str(board["bruno_open"].public_id)]
+
+    assert own_anonymous["mine"] is False
+    assert someone_elses["mine"] is False
+    assert set(own_anonymous) == set(someone_elses) == {"id", "category", "text", "cluster", "mine"}
+
+
+@pytest.mark.django_db
+def test_computing_mine_stays_flat_from_one_card_to_many(
+    client: Client, retro: Retrospective, ada: User, owner: User
+) -> None:
+    """`mine` costs no query, and does not grow with the board.
+
+    Ada owns every card here, so `mine` is computed as `true` on each one — the
+    branch that would betray a serializer reaching for `card.author` (the
+    relation, a user fetch per card) rather than `card.author_id` (the column,
+    already loaded). The count is `FULL_STATE_QUERIES` for one card and the same
+    for forty, which is what proves the mark is free.
+    """
+    make_card(retro.cycle, ada, "the only card so far 0")
+    advance_to(retro, owner, Stage.REVEAL)
+    log_in(client, ada)
+
+    with CaptureQueriesContext(connection) as one:
+        assert get_state(client, retro).status_code == 200
+
+    for index in range(1, 40):
+        make_card(retro.cycle, ada, f"one of many {index}")
+
+    with CaptureQueriesContext(connection) as many:
+        response = get_state(client, retro)
+
+    assert len(response.json()["cards"]) == 40
+    assert all(card["mine"] is True for card in response.json()["cards"])
+    assert len(one.captured_queries) == FULL_STATE_QUERIES
+    assert len(many.captured_queries) == FULL_STATE_QUERIES
 
 
 # --------------------------------------------------------------------------

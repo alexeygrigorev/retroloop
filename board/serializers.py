@@ -61,7 +61,9 @@ Otherwise — `v` is absent, stale, or unparseable — the full state::
                                    # #12 mutates by. Never Card.pk.
           "category": "START",     # Card.Category value
           "text": "…",             # Card.text
-          "cluster": null          # Cluster id, or null for ungrouped
+          "cluster": null,         # Cluster id, or null for ungrouped
+          "mine": true             # this viewer wrote it and did not mark it
+                                   # anonymous — see below and card_payload()
         }
       ],
       "clusters": [
@@ -80,6 +82,19 @@ Otherwise — `v` is absent, stale, or unparseable — the full state::
 `cards` holds the viewer's own cards and nobody else's before `REVEAL`, and
 every card in the cycle in `position` order from `REVEAL` on. No card carries an
 author, at any stage, anonymous or not — see `card_payload()`.
+
+`cards[].mine` is the one person-fact the board is allowed to carry, and it is
+only ever a fact about the viewer themselves — `_docs/decisions.md` item 10. It
+is `true` when the server can see that this viewer wrote the card *and* did not
+mark it anonymous, and `false` for everything else: another member's card, and
+the viewer's own anonymous card alike. It excludes the viewer's own anonymous
+cards deliberately, so a projected board cannot show the room which card the
+facilitator wrote anonymously, and its value for a given card and viewer does not
+change at the reveal — an own anonymous card reads `false` before the reveal
+because `is_anonymous` is set, and `false` after it because item 3 has nulled the
+author. It is never an author, never a name, and it is `false` for both a card
+somebody else wrote and a card the viewer wrote anonymously, so it hands a client
+no way to tell those two cases apart. See `card_payload()`.
 
 `vote_totals` is the whole of what a viewer who may not see the totals must not
 receive, so it is one key that is simply absent rather than a set of zeroes or
@@ -144,7 +159,7 @@ def board_state(user, retro: Retrospective) -> dict:
         "stage": retro.stage,
         "version": retro.version,
         "changed": True,
-        "cards": [card_payload(card) for card in visible_cards(user, retro)],
+        "cards": [card_payload(card, user) for card in visible_cards(user, retro)],
         "clusters": cluster_payloads(retro),
         "votes": vote_payload(user, retro),
     }
@@ -186,8 +201,8 @@ def visible_cards(user, retro: Retrospective):
     return Card.objects.filter(cycle=retro.cycle, author=user)
 
 
-def card_payload(card: Card) -> dict:
-    """One card, as four fields, none of which is a person or a time.
+def card_payload(card: Card, user) -> dict:
+    """One card, as five fields, none of which is another person or a time.
 
     No author, at any stage. The criterion is that an anonymous card carries no
     author field at all — not null, not an empty string, not an id — and the
@@ -203,6 +218,18 @@ def card_payload(card: Card) -> dict:
     to qualify, and a per-card "this one was written anonymously" flag is a
     fact about a member that the board does not need in order to render.
 
+    `mine` is the exception `_docs/decisions.md` item 10 carves out, and it is
+    only ever a fact about `user` themselves: `true` exactly when this viewer
+    wrote the card and did not mark it anonymous. It is read straight off the
+    row — `card.author_id`, the foreign-key column, never `card.author`, which
+    would fetch the user — and `card.is_anonymous`, both already loaded, so it
+    costs no query and joins no table. It is deliberately `false` for the
+    viewer's own anonymous card: before the reveal because `is_anonymous` is
+    set, and after it because item 3 has nulled the author, which is the same
+    `false` on both sides of the reveal. It is `false` for another member's card
+    too, and gives no way to tell those two `false`s apart — there is no
+    `is_anonymous` in the payload to qualify either one.
+
     `id` is `public_id` and never `pk` — `_docs/decisions.md` item 9. It is sent
     as a string rather than as whatever `json` would make of a `UUID`, so the
     client receives one type for the handle at every stage and from every
@@ -216,6 +243,11 @@ def card_payload(card: Card) -> dict:
         # of forty cards costs no query per card, and an ungrouped card is null
         # here without a branch.
         "cluster": card.cluster_id,
+        # `author_id`, the column, not `author`, the relation: reading the FK's
+        # own value touches no other table, so the mark is free on a row that is
+        # already loaded. False for an own anonymous card at every stage — see
+        # above — and never true for anybody but `user`.
+        "mine": card.author_id == user.pk and not card.is_anonymous,
     }
 
 
