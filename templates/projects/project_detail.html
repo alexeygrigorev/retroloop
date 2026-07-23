@@ -1,9 +1,22 @@
 {% extends "base_app.html" %}
 
 {% comment %}
-  Messages are not looped over here. base.html renders the flash region for
-  every page, so joining the project and replacing the join link both report
-  themselves in the styled success box instead of as a bare bullet.
+  The project dashboard (#26): what do I need to do this week? The open cycle and
+  whether the viewer has submitted, the active retrospective and the ones before
+  it, and every open action item across the project in one place.
+
+  Two privacy rules govern this page, both from `_docs/decisions.md`. Item 3a:
+  submission status is a yes/no per member and never a per-member count — no
+  such count and no submission timestamp is read or rendered here, and the
+  status of the open cycle comes from a live existence check the view runs.
+  Item 5: the open action items are a live query at render time, never a copied
+  or cached list. No card is shown on this page at all — it is a cross-cycle
+  overview, not a board — so items 9 and 10 are met by there being no card text,
+  no card handle and no author anywhere on it.
+
+  Messages are not looped over here. base.html renders the flash region for every
+  page. Comments spanning more than one line are `{% comment %}` blocks, never
+  `{# #}`, which Django's lexer does not match across a newline.
 {% endcomment %}
 
 {% block title %}{{ project.name }}{% endblock %}
@@ -11,14 +24,101 @@
 {% block content %}
   <h1 class="page-heading">{{ project.name }}</h1>
 
-  <section class="panel mt-8">
-    <h2 class="section-heading">Members</h2>
-    <ul class="list-rows">
-      {% for membership in memberships %}
-        <li>{{ membership.user }} — {{ membership.get_role_display }}</li>
-      {% endfor %}
-    </ul>
-  </section>
+  {% if cycles %}
+    <section class="panel mt-8" data-panel="this-week">
+      <h2 class="section-heading">This week</h2>
+      {% if open_cycle %}
+        <p class="mt-2">
+          <a href="{{ open_cycle.get_absolute_url }}" class="link">Week of {{ open_cycle.week_start|date:'j F Y' }}</a>
+          — collecting until {{ open_cycle.closes_at|date:'j F Y, H:i' }}
+        </p>
+        <p class="mt-2">
+          <a href="{% url 'cycle-cards' open_cycle.pk %}" class="btn-primary">Open the feedback form</a>
+        </p>
+        {% if viewer_submitted %}
+          <p class="mt-4 text-sm text-slate-600" data-viewer-submitted="true">
+            You have submitted feedback for this week.
+          </p>
+        {% else %}
+          <p class="mt-4 text-sm text-slate-600" data-viewer-submitted="false">
+            You have not submitted feedback for this week yet.
+          </p>
+        {% endif %}
+
+        {% if member_submissions %}
+          <div class="mt-4">
+            <h3 class="font-medium">Who has submitted</h3>
+            <ul class="list-rows">
+              {% for row in member_submissions %}
+                <li data-submitted="{{ row.submitted|yesno:'yes,no' }}">
+                  {{ row.user.display_name }} —
+                  {% if row.submitted %}submitted{% else %}not yet{% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+          </div>
+        {% endif %}
+      {% else %}
+        <p class="mt-2 text-sm text-slate-600" data-no-open-cycle="true">
+          There is no cycle collecting feedback right now.
+        </p>
+        {% if can_open_cycle %}
+          <p class="mt-4">
+            <a href="{% url 'cycle-create' project.pk %}" class="btn-primary">Open a feedback cycle</a>
+          </p>
+        {% endif %}
+      {% endif %}
+    </section>
+
+    {% if active_retro %}
+      <section class="panel mt-8" data-panel="active-retro">
+        <h2 class="section-heading">The retrospective in progress</h2>
+        <p class="mt-2">
+          <a href="{{ active_retro.get_absolute_url }}" class="link">Retrospective for the week of {{ active_retro.cycle.week_start|date:'j F Y' }}</a>
+          — {{ active_retro.get_stage_display }}
+        </p>
+      </section>
+    {% endif %}
+
+    {% if previous_retros %}
+      <section class="panel mt-8" data-panel="previous-retros">
+        <h2 class="section-heading">Previous retrospectives</h2>
+        <ul class="list-rows">
+          {% for retro in previous_retros %}
+            <li>
+              <a href="{% url 'retro-summary' retro.pk %}" class="link">Week of {{ retro.cycle.week_start|date:'j F Y' }}</a>
+            </li>
+          {% endfor %}
+        </ul>
+      </section>
+    {% endif %}
+
+    {% partial open_actions %}
+  {% else %}
+    {% comment %}
+      The empty state for a brand-new project: one panel that says what to do
+      first, not a page of empty ones. A closed cycle with no retrospective is
+      not brand-new — `cycles` is non-empty then — so this shows only when the
+      project has no cycle at all.
+    {% endcomment %}
+    <section class="panel mt-8" data-panel="empty-project">
+      <h2 class="section-heading">Nothing here yet</h2>
+      <p class="mt-2 text-sm text-slate-600">
+        This project has no feedback cycles yet. A cycle is one week of
+        Start/Stop/Continue: open one, share the join link below, and the team
+        writes their feedback into it.
+      </p>
+      {% if can_open_cycle %}
+        <p class="mt-4">
+          <a href="{% url 'cycle-create' project.pk %}" class="btn-primary">Open the first cycle</a>
+        </p>
+      {% else %}
+        <p class="mt-4 text-sm text-slate-600">
+          A facilitator opens the first cycle.
+        </p>
+      {% endif %}
+    </section>
+  {% endif %}
 
   <section class="panel mt-8">
     <h2 class="section-heading">Feedback cycles</h2>
@@ -34,19 +134,15 @@
     {% else %}
       <p class="mt-2 text-sm text-slate-600">No cycle has been opened for this project yet.</p>
     {% endif %}
+  </section>
 
-    {% if can_open_cycle %}
-      {% comment %}
-        Hidden from a plain member as a courtesy; cycle_create is what refuses
-        them. Keep this a one-line `{# #}` or a `{% comment %}` block — a
-        two-line `{# #}` is not a comment and renders as page text.
-      {% endcomment %}
-      <p class="mt-4">
-        <a href="{% url 'cycle-create' project.pk %}" class="btn-primary">
-          Open a feedback cycle
-        </a>
-      </p>
-    {% endif %}
+  <section class="panel mt-8">
+    <h2 class="section-heading">Members</h2>
+    <ul class="list-rows">
+      {% for membership in memberships %}
+        <li>{{ membership.user }} — {{ membership.get_role_display }}</li>
+      {% endfor %}
+    </ul>
   </section>
 
   <section class="panel mt-8">
@@ -85,3 +181,77 @@
     <a href="{% url 'project-list' %}" class="link">Back to your projects</a>
   </p>
 {% endblock %}
+
+{% comment %}
+  The open action items across every retrospective in the project — one live
+  query (`_docs/decisions.md` item 5), so an item ticked done anywhere drops out
+  of this list. The tick-done control answers with this same partial and swaps it
+  in place. Each row carries its owner, its due date and which retrospective it
+  came from; the viewer's own items and overdue ones are marked. Confirmed items
+  only — a draft #23 extracted is invisible until #24 confirms it.
+{% endcomment %}
+{% partialdef open_actions %}
+  <section class="panel mt-8" id="open-actions" data-panel="open-actions">
+    <h2 class="section-heading">Open action items</h2>
+    {% if open_actions %}
+      <ul class="list-rows">
+        {% for item in open_actions %}
+          <li
+            id="action-item-{{ item.pk }}"
+            data-action-item="{{ item.pk }}"
+            data-mine="{{ item.is_mine|yesno:'yes,no' }}"
+            data-overdue="{{ item.is_overdue|yesno:'yes,no' }}"
+            class="panel"
+          >
+            <p{% if item.is_mine %} class="font-medium"{% endif %}>
+              {{ item.description }}
+              {% if item.is_mine %}<span class="text-xs text-slate-500">(yours)</span>{% endif %}
+            </p>
+            <p class="text-xs text-slate-500">
+              {% if item.is_unassigned %}
+                <span class="font-medium">Unassigned</span>
+              {% else %}
+                Owner: {{ item.owner.display_name }}
+              {% endif %}
+              —
+              {% if item.due_date %}
+                Due {{ item.due_date|date:'j F Y' }}{% if item.is_overdue %}
+                  <span class="font-medium text-red-700">(overdue)</span>{% endif %}
+              {% else %}
+                No due date
+              {% endif %}
+              —
+              from the
+              <a href="{{ item.retrospective.get_absolute_url }}" class="link">retrospective for the week of {{ item.retrospective.cycle.week_start|date:'j F Y' }}</a>
+            </p>
+
+            {% if item.can_update %}
+              {% comment %}
+                htmx posts the tick and swaps the whole open-actions list back in,
+                so a done item drops out live. The action and method are here so
+                the same button works without JavaScript. dashboard_action_toggle
+                asks `can_update_action_item` again and refuses anyone the template
+                merely stopped showing this button to.
+              {% endcomment %}
+              <form
+                method="post"
+                action="{% url 'dashboard-action-toggle' project.pk item.pk %}"
+                hx-post="{% url 'dashboard-action-toggle' project.pk item.pk %}"
+                hx-target="#open-actions"
+                hx-swap="outerHTML"
+                class="mt-4"
+              >
+                {% csrf_token %}
+                <button type="submit" class="btn-secondary">Mark done</button>
+              </form>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="mt-2 text-sm text-slate-600" data-empty="open-actions">
+        No open action items across the project's retrospectives.
+      </p>
+    {% endif %}
+  </section>
+{% endpartialdef %}
